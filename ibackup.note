@@ -1,0 +1,651 @@
+#+TITLE: 系统数据自动备份
+#+SETUPFILE: ~/Notes/common.org
+#+TODO: TODO | DONE(@)
+
+* 摘要
+  * 将isync-data下的数据 *实时* 同步至isync-backup下
+  * 在isync-snapshots下做快照, 保存版本信息
+  * 按指数衰减算法清理isync-snapshots下的快照
+
+* [2/3] Memo
+** TODO [2015-04-18 Sat] isync-data不应该放在etc这个目录下, 可能导致无穷递归.
+   放在/backup下要好很多.
+** DONE [#B] [2013-07-23 Tue] lsyncd 2.1新版 无法使用之前写的config文件, 需要升级 :Action:
+   - State "DONE"       from "TODO"       [2015-04-18 Sat 11:43]
+** [2012-06-29 Fri]: 2.0.7版更新. 以后有空了注意与rsyncssh.lua同步
+
+   需要处理rsyncExitCodes之类的东西. rsyncExitCodes = default.rsyncExitCodes,
+
+** DONE [2012-06-17 Sun]: 使用牛顿冷却公式来处理文件备份的问题 [[http://songshuhui.net/archives/67391][URL]]
+   - State "DONE"       from "TODO"       [2015-04-19 Sun 13:32] \\
+     已应用.
+** [2011-09-05 Mon]: 注意exclude文件里不能有空行, 否则所有文件都会被排除掉.
+
+** [2011-05-19 Thu] update to lsyncd-2.0
+   新版的优点:
+   * 可以处理move事件, 不用像以前那样进行"delete here >> copy there"的
+     操作.
+   * 配置文件使用lua语法.
+
+* 架构规划
+  1. 数据目录: source_directories
+     1) 基于目录+软链接的方式管理起来更方便直观些.
+     2) 源目录通过软链接到source_rootdir(isync-data)下
+        : isync-data/note --> ~/Notes
+        其中~/Notes是真正要备份的目录: source_directory
+
+  2. 目标目录(备份数据至..): backup_directory
+     - backup_rootdir(/btrfs/backup): 用于数据备份的根目录, 所有源目录都将同步其下的
+       子目录
+     - backup_directory: 真正用于数据备份的目录
+       如1.2中的例子:
+       : backup_directory = /btrfs/backup/note
+     - 如果backup_rootdir是btrfs文件系统的一个子卷(subvolume), 则可基
+       于基snapshot功能, 做版本备份(TimeMachine).
+     - snapshot_rootdir (/btrfs/TimeMachine): 用于在其下存储btrfs子卷
+       (/btrfs/backup)快照. 应为btrfs文件系统下一普通目录.
+     - 基于日期的快照命名: snapshot_rootdir/day/time
+       : /btrfs/TimeMachine/2011-09-04/22:13
+     - 快照清理
+       - 需要自动清理旧的备份(指数衰减)
+* install
+  1. aur: lsyncd
+  2. 需要lua中的lfs包 lua51-filesystem
+* 多余备份的清理算法
+** 流程
+*** 基于指数衰减, 或牛顿冷却定律.
+    其实与玻尔兹曼分布一回事.
+
+   1. 随着时间的增加, 备份保留的意义在递减.
+
+*** 根据存活概率确定备份的去留
+    1. 选择某段时间间隔delta_t, 计算该区间内备份的数目current_snapshots
+    2. 通过积分, 计算delta_t容许的备份数 allowed_snapshots
+    3. 如果allowed_snapshots >= current_snapshots, 不操作. 反之清理掉
+       多余的.
+**** src
+
+#+NAME: weighted-choose-one
+#+BEGIN_SRC python :session test :results output
+  import random
+  import bisect
+  import operator
+
+  def accumulate(iterable, func=operator.add):
+      it = iter(iterable)
+      total = next(it)
+      yield total
+      for element in it:
+          total = func(total, element)
+          yield total
+
+  def weighted_choose_one(choices, weights):
+      """ select single one based on their weights """
+      
+      assert len(choices) == len(weights)
+      cumdist = list(accumulate(weights))
+      x = random.random() * cumdist[-1]
+      return bisect.bisect(cumdist, x)
+
+#+END_SRC
+
+#+RESULTS: weighted-choose-one
+
+
+基于权重选择多个保留项
+#+NAME: weighted-choose
+#+BEGIN_SRC python :session test :results output
+  def weighted_choose(choices, weights, ncount):
+      """ choose n-choices one time according their weights """
+      
+      assert len(choices) > ncount
+      
+      chosen = []
+      for it in range(ncount):
+          idx = weighted_choose_one(choices, weights)
+          chosen.append(choices[idx])
+          del choices[idx]
+          del weights[idx]
+      return sorted(chosen)
+
+#+END_SRC
+
+#+RESULTS: weighted-choose
+
+
+**** 测试
+
+#+tblname: table1
+| choices | weights |
+|---------+---------|
+| dir1    |    0.99 |
+| dir2    |    0.87 |
+| dir3    |    0.80 |
+| dir4    |    0.75 |
+| dir5    |     0.7 |
+
+#+tblname: table2
+|      adirs | bdirs |
+|------------+-------|
+| 2015-04-19 | 22:00 |
+| 2015-04-19 | 21:00 |
+| 2015-04-18 | 20:01 |
+| 2015-04-18 | 21:03 |
+| 2015-04-17 | 12:04 |
+| 2015-04-16 | 11:05 |
+| 2015-04-13 | 12:06 |
+| 2015-03-13 | 12:07 |
+
+#+begin_src python :var adirs=table2[,0] :var bdirs=table2[,1] :results output :session test
+  import datetime
+  from __future__ import division
+
+  max_hours = 500
+  max_snapshots = 80
+  now = datetime.datetime.now()
+  hours_list = [ ]
+
+  choices = []
+  weights = []
+
+  def snapshot_dir_to_datetime(day_dir, time_dir):
+      return datetime.datetime.strptime("{}/{}".format(day_dir, time_dir), "%Y-%m-%d/%H:%M")
+
+  def calc_snapshot_score(day_dir, time_dir):
+      delta = now - snapshot_dir_to_datetime(day_dir, time_dir)
+      hours = delta.total_seconds() / 3600
+      #print(hours)
+      return evaluate_decay_score(hours, max_snapshots)
+
+  for adir, bdir in zip(adirs, bdirs):
+      score = calc_snapshot_score(adir, bdir)
+      #print("{}/{}: {:.2f}".format(adir, bdir, score))
+      choices.append((adir, bdir))
+      weights.append(score)
+
+  def calc_allowed_snapshots(choices):
+      """ calculate how many snapshots allowed to keep """
+      
+      assert len(choices) >= 2
+      first, last = choices[0], choices[-1]
+      
+      d1 = (now - snapshot_dir_to_datetime(*last)).total_seconds() / 3600
+      d2 = (now - snapshot_dir_to_datetime(*first)).total_seconds() / 3600
+      return evaluate_decay_area(d1, d2, max_snapshots)
+
+
+  def bichoose(ichoices, current=None):
+      if current is None:
+          choice1 = next(ichoices)
+      else:
+          choice1 = current
+          
+      finished = False
+      for choice2 in ichoices:
+          allowed = calc_allowed_snapshots([choice1, choice2])
+          print("{} {} {:.1f}".format(choice1[-1], choice2[-1], allowed))
+          if allowed >= 1:
+              score1 = calc_snapshot_score(*choice1)
+              score2 = calc_snapshot_score(*choice2)
+              #idx = weighted_choose_one([choice1, choice2], [score1, score2])
+              #yield choice1 if idx == 0 else choice2
+              yield choice1
+              break
+      else:
+          finished = True
+          yield choice1
+          
+      if not finished:
+          for c in bichoose(ichoices, current=choice2):
+              yield c
+
+  ichoices = iter(choices)
+
+  for c in bichoose(ichoices):
+      print(c)
+
+#+end_src
+
+#+RESULTS:
+#+begin_example
+
+>>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> ... ... >>> ... ... ... ... ... >>> ... ... ... ... ... >>> ... ... ... ... ... ... ... ... ... >>> >>> ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... >>> >>> >>> ... ... 22:00 21:00 0.8
+22:00 20:01 17.4
+('2015-04-19', '22:00')
+20:01 21:03 0.6
+20:01 12:04 14.9
+('2015-04-18', '20:01')
+12:04 11:05 8.1
+('2015-04-17', '12:04')
+11:05 12:06 13.1
+('2015-04-16', '11:05')
+12:06 12:07 9.1
+('2015-04-13', '12:06')
+('2015-03-13', '12:07')
+#+end_example
+
+** src
+
+#+NAME: evalue-decay
+#+BEGIN_SRC python :results output :session test :cache no
+  import math
+  from __future__ import division
+
+  def evaluate_decay_score(elapsed, kbt=600*0.083145):
+      """ use Boltzmann distribution instead """
+      
+      assert elapsed >= 0 and kbt > 0
+      
+      score = math.exp(-1*elapsed / kbt)
+      return score
+
+  def evaluate_decay_area(point_from, point_to, kbt=600*0.083145):
+      """ the Boltzmann distribution aread """
+      
+      if point_from > point_to:
+          point_from, point_to = point_to, point_from
+      
+      s1 = math.exp(-1*point_from / kbt)
+      s2 = math.exp(-1*point_to / kbt)
+      return (s1 - s2)*kbt
+#+END_SRC
+
+#+RESULTS: evalue-decay
+
+测试下看:
+#+BEGIN_SRC python :session test :results output :cache no
+  print(evaluate_decay_score(0, 300))
+  print(evaluate_decay_score(10, 30))
+  print(evaluate_decay_area(0, 500, 80))
+#+END_SRC
+
+#+RESULTS:
+: 1.0
+: 0.716531310574
+: 79.8455636691
+
+
+#+BEGIN_SRC python :session test :results output :cache no
+  max_days = 500
+  max_snapshots = 80
+  print(evaluate_decay_area(0, max_days, max_snapshots))
+
+  def itp(idays, current=None):
+      # the starting point
+      if current is None:
+          d1 = next(idays)
+          yield d1
+      else:
+          d1 = current
+      
+      # indicate if idays has been exhausted
+      empty = True
+      for d2 in idays:
+          empty = False
+          s = evaluate_decay_area(d1, d2, max_snapshots)
+          #print("{}-{} = {:.2f}".format(d1, d2, s))
+          if s >= 1:
+              break
+      else:
+          empty = True
+          
+      if not empty:
+          yield d2
+          for p in itp(idays, current=d2):
+              yield p
+
+  idays = iter(range(max_days))
+  for d in itp(idays):
+      print(d)
+
+#+END_SRC
+
+#+RESULTS:
+#+begin_example
+
+>>> 79.8455636691
+>>> ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... >>> >>> ... ... 0
+2
+4
+6
+8
+10
+12
+14
+16
+18
+20
+22
+24
+26
+28
+30
+32
+34
+36
+38
+40
+42
+44
+46
+48
+50
+52
+54
+56
+59
+62
+65
+68
+71
+74
+77
+80
+83
+86
+89
+93
+97
+101
+105
+109
+114
+119
+124
+129
+135
+141
+148
+155
+163
+172
+182
+193
+206
+221
+239
+262
+295
+351
+#+end_example
+
+* src
+** 启动lsyncd
+*** start-lsyncd
+#+BEGIN_SRC sh :tangle scripts/start-lsyncd.sh :shebang #! /usr/bin/env bash :results none
+  # get real script path
+  script_path="$0"
+  [[ -h "$script_path" ]] && script_path=$(readlink "$script_path")
+
+  script_root=$(cd $(dirname "$script_path"); pwd)
+  echo "script root is: \"$script_root\""
+  cd "$script_root"
+
+  while true; do
+      lsyncd -nodaemon -delay 30 -log all lsyncd.lua
+      # sleep 5
+      exit 0
+  done
+#+END_SRC
+
+*** 测试
+#+BEGIN_SRC sh
+scripts/start-lsyncd.sh
+#+END_SRC
+
+#+RESULTS:
+: /home/ybyygu/etc/backup/scripts
+
+** lsyncd配置文件
+   需要安装: lua-filesystem
+
+   见源代码中default.lua, default.checkgauge
+#+BEGIN_EXAMPLE
+--
+-- used to ensure there aren't typos in the keys
+--
+default.checkgauge = {
+	action        =  true,
+	checkgauge    =  true,
+	collect       =  true,
+	delay         =  true,
+	exitcodes     =  true,
+	init          =  true,
+	maxDelays     =  true,
+	maxProcesses  =  true,
+	onAttrib      =  true,
+	onCreate      =  true,
+	onModify      =  true,
+	onDelete      =  true,
+	onStartup     =  true,
+	onMove        =  true,
+	prepare       =  true,
+	source        =  true,
+	target        =  true,
+}
+#+END_EXAMPLE
+   1. sync函数是主要的入口
+   2. 几个重要的子函数
+      1. init
+      2. action
+      3. collect
+      4. prepare
+   3. 默认的事件处理函数
+      1. OnStartup
+      2. OnAttrib
+      3. OnCreate
+      4. OnDelete
+      5. OnModify
+      6. OnMove
+   4. default.action ==> onMove, onDelete ...
+** 响应lsyncd事件
+** btrfs快照管理  [[elisp:(org-babel-tangle)][输出]]
+*** tangle
+#+BEGIN_SRC python :noweb yes :tangle scripts/snapman.py :shebang #! /usr/bin/env python2
+  __VERSION__ = "0.1.0"
+
+  import os
+  import sys
+  import time
+  import datetime
+  import subprocess
+  import math
+  import random
+  import re
+
+  <<setup-logger>>
+
+  <<snapshot-manager>>
+
+#+END_SRC
+*** setup logger
+#+NAME: setup-logger
+#+BEGIN_SRC python :session test
+  YAML_CONF = """
+  version: 1
+  disable_existing_loggers: true
+
+  root:
+    level: !!python/name:logging.NOTSET
+    handlers: [logfile, console]
+
+  handlers:
+      logfile:
+        class: logging.FileHandler
+        filename: isync.log
+        formatter: simpleFormatter
+        delay: True
+        level: !!python/name:logging.NOTSET
+      console:
+        class: logging.StreamHandler
+        stream: ext://sys.stdout
+        formatter: simpleFormatter
+        level: !!python/name:logging.NOTSET
+
+  formatters:
+    simpleFormatter:
+      class: !!python/name:logging.Formatter
+      format: '%(levelname)-05s %(name)s@l%(lineno)-4d %(message)s'
+      datefmt: '%d/%m/%Y %H:%M:%S'
+  """
+
+  import yaml
+  import StringIO
+  import logging
+  import logging.config
+
+  config = yaml.load(StringIO.StringIO(YAML_CONF))
+  logging.config.dictConfig(config)
+
+  log = logging.getLogger("isync")
+  log.info("w")
+
+
+#+END_SRC
+
+#+RESULTS: setup-logger
+
+*** SnapshotManager
+#+NAME: snapshot-manager
+#+BEGIN_SRC python :neweb yes :results none
+class SnapshotManager(object):
+    def __init__(self, target_subvolume, snapshot_rootdir, max_snapshots_per_day=50, max_snapshot_hits=4):
+        self.target_subvolume = target_subvolume
+        self.snapshot_rootdir = snapshot_rootdir
+        self.max_snapshots_per_day = max_snapshots_per_day
+
+        self._snapshot_hits = 0
+        self.max_snapshot_hits = max_snapshot_hits
+
+    <<take-snapshot>>
+
+    <<delete-snapshot>>
+
+    <<trim-snapshot>>
+
+#+END_SRC
+
+*** take snapshot
+#+NAME: take-snapshot
+#+BEGIN_SRC python
+  def take_snapshot(snapshot_name):
+
+      args = "btrfs subvolume snapshot".split()
+
+      args.append(target_subvolume)
+      args.append(snapshot_name)
+
+      subprocess.check_call(args)
+
+      snap_parent_dir = os.path.join(self.snapshot_rootdir, time.strftime("%Y-%m-%d"))
+      log.debug("%s" % snap_parent_dir)
+
+      if not os.path.exists(snap_parent_dir):
+          os.makedirs(snap_parent_dir)
+          log.info("Created directory: %s" % snap_parent_dir)
+
+      # to taken snapshot only when there is no directory named as snap_name
+      dirname = "%s:%02i" % (time.strftime("%H"), int(time.strftime("%M")))
+      snap_name = os.path.join(snap_parent_dir, dirname)
+      if not os.path.isdir(snap_name):
+          args = ["btrfs", "subvolume", "snapshot", self.target_subvolume, snap_name]
+          log.debug("Called with: %s" % " ".join(args))
+          subprocess.call(args)
+      else:
+          log.debug("Delayed for %s" % snap_name)
+
+#+END_SRC
+*** delete snapshot
+删除单个snapshot, 只需传入snapshot的路径(目录).
+
+#+NAME: delete-snapshot
+#+BEGIN_SRC python
+  def day_time_to_snapshot(day_dir, time_dir):
+      snapshot_path = os.path.join(self.snapshot_rootdir, day_dir, time_dir)
+      return snapshot_path
+
+  def delete_snapshot(snapshot_path):
+      if not os.path.exists(snapshot_path):
+          raise RuntimeError("snapshot directory {} does not exists!".format(snapshot_path))
+
+      args = "sudo btrfs subvolume delete".split()
+      args.append(snapshot_path)
+      subprocess.call(args)
+      print(" ".join(args))
+
+#+END_SRC
+
+*** trim snapshots
+#+NAME: trim-snapshots
+#+BEGIN_SRC python
+  def _calc_trim_possibility(self, elapsed, max):
+      r = 1 - math.log(elapsed + 1.0, max)
+      return r
+
+  def trim_snapshots(self, maxdays=15, maxdel=2):
+      """ trim outdated snapshots with some intelligence
+
+      equation: 1 - log(seq, base)
+      seq: elapsed_days
+      base: maxdays
+      """
+
+      del_snaps = 0
+      for adir in os.listdir(self.snapshot_rootdir):
+          snap_parentdir_path = os.path.join(self.snapshot_rootdir, adir)
+          now = datetime.datetime.now()
+          before = datetime.datetime.strptime(adir, "%Y-%m-%d")
+
+          # try to trim snapshots according to a calculated ratio
+          elapsed_days = (now - before).days + 1
+          ratio = self._calc_trim_possibility(elapsed_days, maxdays)
+
+          allowed_dirs_count = self.max_snapshots_per_day * ratio
+          dirs_count = len(os.listdir(snap_parentdir_path))
+
+          # remove empty directory
+          if dirs_count == 0:
+              log.info("removed empty directory {}".format(snap_parentdir_path))
+              # subprocess.call(["rmdir", path])
+              if os.path.exists(snap_parentdir_path):
+                  os.rmdir(snap_parentdir_path)
+
+          delete_count = int(dirs_count - allowed_dirs_count)
+          if delete_count <= 0:
+              log.debug("dir {}: {:3.0f} < {:3.0f}".format(adir, dirs_count, allowed_dirs_count))
+              continue
+
+          log.info("dir {}: {:3.0f} > {:3.0f}\n {:3.0f} snapshots need to be removed.".format(
+                    adir,
+                    dirs_count,
+                    allowed_dirs_count,
+                    delete_count)
+                   )
+
+          cablist = []
+          dnlist = []
+          o_criteria_number = None
+          for bdir in os.listdir(snap_parentdir_path):
+              try:
+                  before = datetime.datetime.strptime("%s/%s" % (adir, bdir), "%Y-%m-%d/%H:%M")
+              except ValueError:
+                  log.error("Failed to parse time stamp: {}/{}".format(adir, bdir))
+                  continue
+              now = datetime.datetime.now()
+              elapsed_days = (now - before).total_seconds()/(24*3600)
+              criteria_number = self._calc_trim_possibility(elapsed_days, maxdays)
+              if not o_criteria_number is None:
+                  dnlist.append(criteria_number - o_criteria_number)
+              o_criteria_number = criteria_number
+
+              random_number = random.random()
+              if random_number >= criteria_number:
+                  cablist.append((adir, bdir))
+          dnlist.append(0.0)
+
+          x = min(delete_count, len(cablist), maxdel)
+          for cn, (adir, bdir) in sorted(zip(dnlist, cablist))[:x]:
+              log.debug("{}/{}: {:4.2f}".format(adir, bdir, cn))
+              self.delete_snapshot(adir, bdir)
+
+#+END_SRC
