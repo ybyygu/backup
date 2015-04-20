@@ -1,6 +1,8 @@
 #+TITLE: 系统数据自动备份
 #+SETUPFILE: ~/Notes/common.org
 #+TODO: TODO | DONE(@)
+#+PROPERTY: mkdirp yes
+#+PROPERTY: padline no
 
 * 摘要
   * 将isync-data下的数据 *实时* 同步至isync-backup下
@@ -370,6 +372,7 @@
 #+end_example
 
 * src
+
 ** 启动lsyncd
 *** start-lsyncd
 #+BEGIN_SRC sh :tangle scripts/start-lsyncd.sh :shebang #! /usr/bin/env bash :results none
@@ -442,7 +445,7 @@ default.checkgauge = {
 ** btrfs快照管理  [[elisp:(org-babel-tangle)][输出]]
 *** tangle
 #+BEGIN_SRC python :noweb yes :tangle scripts/snapman.py :shebang #! /usr/bin/env python2
-  __VERSION__ = "0.1.0"
+  <<header>>
 
   import os
   import sys
@@ -456,6 +459,33 @@ default.checkgauge = {
   <<setup-logger>>
 
   <<snapshot-manager>>
+
+  <<main-function>>
+
+#+END_SRC
+
+#+RESULTS:
+
+*** header
+#+NAME: header
+#+BEGIN_SRC python
+  # -*- coding: utf-8 -*-
+  #====================================================================#
+  #   DESCRIPTION:  btrfs snapshot dwim
+  # 
+  #       OPTIONS:  ---
+  #  REQUIREMENTS:  ---
+  #         NOTES:  ---
+  #        AUTHOR:  Wenping Guo (ybyygu) 
+  #         EMAIL:  winpng@gmail.com
+  #       LICENCE:  GPL version 2 or upper
+  #       CREATED:  2015-04-20 17:51
+  #       UPDATED: 
+  #====================================================================#
+
+  __VERSION__ = '0.1.0'
+  __UPDATED__ = '2015-04-20 17:52'
+
 
 #+END_SRC
 *** setup logger
@@ -498,52 +528,54 @@ default.checkgauge = {
   logging.config.dictConfig(config)
 
   log = logging.getLogger("isync")
-  log.info("w")
-
 
 #+END_SRC
 
 #+RESULTS: setup-logger
 
 *** SnapshotManager
+**** tangle
 #+NAME: snapshot-manager
-#+BEGIN_SRC python :neweb yes :results none
-class SnapshotManager(object):
-    def __init__(self, target_subvolume, snapshot_rootdir, max_snapshots_per_day=50, max_snapshot_hits=4):
-        self.target_subvolume = target_subvolume
-        self.snapshot_rootdir = snapshot_rootdir
-        self.max_snapshots_per_day = max_snapshots_per_day
-
-        self._snapshot_hits = 0
-        self.max_snapshot_hits = max_snapshot_hits
-
-    <<take-snapshot>>
-
-    <<delete-snapshot>>
-
-    <<trim-snapshot>>
-
+#+BEGIN_SRC python :results output :session test :noweb yes
+  class SnapshotManager(object):
+      def __init__(self, target_subvolume, snapshot_rootdir, max_snapshots_per_day=50, max_snapshot_hits=4):
+          self.target_subvolume = target_subvolume
+          self.snapshot_rootdir = snapshot_rootdir
+          self.max_snapshots_per_day = max_snapshots_per_day
+          
+          self._snapshot_hits = 0
+          self.max_snapshot_hits = max_snapshot_hits
+          
+      <<take-snapshot>>
+      
+      <<delete-snapshot>>
+      
+      <<trim-snapshot>>
 #+END_SRC
 
-*** take snapshot
+#+RESULTS: snapshot-manager
+
+**** take snapshot
+     BARFS 快照.
+     1. 根据当前的时间, 确定快照保存的目录名: snapshot_dirname.
+     2. 如果同名的快照已存在, 则不操作.
+     3. 使用"sudo btrfs subvolume snapshot" 来制作快照.
+        1. 参数1 目标子卷名: target_subvolume
+        2. 参数2 快照保存目录: snapshot_dirname
+
 #+NAME: take-snapshot
 #+BEGIN_SRC python
-  def take_snapshot(snapshot_name):
-
+  def take_snapshot(target_subvolume, snapshot_dirname):
+      
       args = "btrfs subvolume snapshot".split()
-
-      args.append(target_subvolume)
-      args.append(snapshot_name)
-
-      subprocess.check_call(args)
-
       snap_parent_dir = os.path.join(self.snapshot_rootdir, time.strftime("%Y-%m-%d"))
+      
       log.debug("%s" % snap_parent_dir)
-
+      
       if not os.path.exists(snap_parent_dir):
           os.makedirs(snap_parent_dir)
           log.info("Created directory: %s" % snap_parent_dir)
-
+          
       # to taken snapshot only when there is no directory named as snap_name
       dirname = "%s:%02i" % (time.strftime("%H"), int(time.strftime("%M")))
       snap_name = os.path.join(snap_parent_dir, dirname)
@@ -553,9 +585,18 @@ class SnapshotManager(object):
           subprocess.call(args)
       else:
           log.debug("Delayed for %s" % snap_name)
+      args.append(target_subvolume)
+      args.append(snapshot_dirname)
+      
+      subprocess.check_call(args)
 
 #+END_SRC
-*** delete snapshot
+
+#+RESULTS: take-snapshot
+: None
+
+
+**** delete snapshot
 删除单个snapshot, 只需传入snapshot的路径(目录).
 
 #+NAME: delete-snapshot
@@ -575,13 +616,9 @@ class SnapshotManager(object):
 
 #+END_SRC
 
-*** trim snapshots
+**** trim snapshots
 #+NAME: trim-snapshots
 #+BEGIN_SRC python
-  def _calc_trim_possibility(self, elapsed, max):
-      r = 1 - math.log(elapsed + 1.0, max)
-      return r
-
   def trim_snapshots(self, maxdays=15, maxdel=2):
       """ trim outdated snapshots with some intelligence
 
@@ -589,63 +626,36 @@ class SnapshotManager(object):
       seq: elapsed_days
       base: maxdays
       """
+      pass
 
-      del_snaps = 0
-      for adir in os.listdir(self.snapshot_rootdir):
-          snap_parentdir_path = os.path.join(self.snapshot_rootdir, adir)
-          now = datetime.datetime.now()
-          before = datetime.datetime.strptime(adir, "%Y-%m-%d")
 
-          # try to trim snapshots according to a calculated ratio
-          elapsed_days = (now - before).days + 1
-          ratio = self._calc_trim_possibility(elapsed_days, maxdays)
 
-          allowed_dirs_count = self.max_snapshots_per_day * ratio
-          dirs_count = len(os.listdir(snap_parentdir_path))
+#+END_SRC
+*** main function
+#+NAME: main-function
+#+BEGIN_SRC python  :session test :results output
+  def main(argv=None):
+      import optparse
+      
+      if argv == None: argv = sys.argv
+      
+      # parsing cmdline
+      cmdl_usage = 'usage: %prog [options]...'
+      cmdl_version = "%prog " + __VERSION__ + "; updated at: " + __UPDATED__
+      cmdl_parser = optparse.OptionParser(usage=cmdl_usage, \
+                                          version=cmdl_version, \
+                                              conflict_handler='resolve')
+      cmdl_parser.add_option('-h', '--help', 
+                              action='help',
+                              help='print this help text and exit')
+      cmdl_parser.add_option('-v', '--version', 
+                              action='version', 
+                              help='print program version and exit')
+      (cmdl_opts, cmdl_args) = cmdl_parser.parse_args()
+      
+      return 0
 
-          # remove empty directory
-          if dirs_count == 0:
-              log.info("removed empty directory {}".format(snap_parentdir_path))
-              # subprocess.call(["rmdir", path])
-              if os.path.exists(snap_parentdir_path):
-                  os.rmdir(snap_parentdir_path)
-
-          delete_count = int(dirs_count - allowed_dirs_count)
-          if delete_count <= 0:
-              log.debug("dir {}: {:3.0f} < {:3.0f}".format(adir, dirs_count, allowed_dirs_count))
-              continue
-
-          log.info("dir {}: {:3.0f} > {:3.0f}\n {:3.0f} snapshots need to be removed.".format(
-                    adir,
-                    dirs_count,
-                    allowed_dirs_count,
-                    delete_count)
-                   )
-
-          cablist = []
-          dnlist = []
-          o_criteria_number = None
-          for bdir in os.listdir(snap_parentdir_path):
-              try:
-                  before = datetime.datetime.strptime("%s/%s" % (adir, bdir), "%Y-%m-%d/%H:%M")
-              except ValueError:
-                  log.error("Failed to parse time stamp: {}/{}".format(adir, bdir))
-                  continue
-              now = datetime.datetime.now()
-              elapsed_days = (now - before).total_seconds()/(24*3600)
-              criteria_number = self._calc_trim_possibility(elapsed_days, maxdays)
-              if not o_criteria_number is None:
-                  dnlist.append(criteria_number - o_criteria_number)
-              o_criteria_number = criteria_number
-
-              random_number = random.random()
-              if random_number >= criteria_number:
-                  cablist.append((adir, bdir))
-          dnlist.append(0.0)
-
-          x = min(delete_count, len(cablist), maxdel)
-          for cn, (adir, bdir) in sorted(zip(dnlist, cablist))[:x]:
-              log.debug("{}/{}: {:4.2f}".format(adir, bdir, cn))
-              self.delete_snapshot(adir, bdir)
+  if __name__ == '__main__':
+      main()
 
 #+END_SRC
