@@ -50,6 +50,10 @@
        : /btrfs/TimeMachine/2011-09-04/22:13
      - 快照清理
        - 需要自动清理旧的备份(指数衰减)
+* BTRFS
+  1. BTRFS 做增量备份: [[https://btrfs.wiki.kernel.org/index.php/Incremental_Backup][incremental backup]]
+     "-o" 做只读版本
+
 * install
   1. aur: lsyncd
   2. 需要lua中的lfs包 lua51-filesystem
@@ -139,8 +143,8 @@
 | 2015-03-13 | 12:07 |
 
 #+begin_src python :var adirs=table2[,0] :var bdirs=table2[,1] :results output :session test
-  import datetime
   from __future__ import division
+  import datetime
 
   max_hours = 500
   max_snapshots = 80
@@ -230,8 +234,8 @@
 
 #+NAME: evalue-decay
 #+BEGIN_SRC python :results output :session test :cache no
-  import math
   from __future__ import division
+  import math
 
   def evaluate_decay_score(elapsed, kbt=600*0.083145):
       """ use Boltzmann distribution instead """
@@ -370,11 +374,112 @@
 295
 351
 #+end_example
+* logger
+#+NAME: logger
+#+BEGIN_SRC python :session test
+  import logging
+
+  LogThemeNull = logging.Formatter(
+      " %(message)s")
+  LogThemeSimple = logging.Formatter(
+      "[%(levelname)s] %(message)s")
+  LogThemeClean = logging.Formatter(
+      "[%(name)s|%(lineno)04d %(levelname)s] %(message)s")
+  LogThemeClean2 = logging.Formatter(
+      "[%(name)s|%(lineno)04d %(levelname)5s %(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+  LogThemeFull = logging.Formatter(
+      "\n%(asctime)s - %(name)s.%(funcName)s, line %(lineno)d\n" \
+      + "-"*80 + "\n [%(levelname)s] %(message)s",
+      datefmt="%Y-%m-%d %H:%M:%S")
+
+  class ConsoleHandler(logging.StreamHandler):
+      """
+      log messages to console screen
+      >> direct logging.error and above to stderr, others to stdout
+      """
+      def __init__(self, *args, **kwargs):
+          logging.StreamHandler.__init__(self, *args, **kwargs)
+
+      def emit(self, record):
+          if record.levelno >= logging.WARN:
+              self.stream = sys.stderr
+          else:
+              self.stream = sys.stdout
+          logging.StreamHandler.emit(self, record)
+
+  def setup_logger(name=None, theme="null", logfile=None, verbose=True, root=False):
+      """ if name is empty, you get the root logger
+      @root: root logger of not
+      """
+      
+      Themes = {"clean":LogThemeClean,
+                "clean2": LogThemeClean2,
+                "simple":LogThemeSimple,
+                "null":LogThemeNull,
+                "full":LogThemeFull
+                }
+
+      # make levelname shorter
+      if theme in ("clean", "simple"):
+          logging.addLevelName(logging.DEBUG, "D")
+          logging.addLevelName(logging.INFO, "I")
+          logging.addLevelName(logging.WARN, "W")
+          logging.addLevelName(logging.ERROR, "E")
+
+      if name and not root:
+          log = logging.getLogger(name)
+      else:
+          log = logging.getLogger()
+          
+      logger.setLevel(logging.DEBUG)
+      
+      # keep console screen clean
+      console_hdlr = ConsoleHandler()
+      if verbose:
+          console_hdlr.setLevel(logging.DEBUG)
+      else:
+          console_hdlr.setLevel(logging.INFO)
+      theme = Themes[theme.lower()]
+      console_hdlr.setFormatter(theme)
+      logger.addHandler(console_hdlr)
+
+      # send debug info to logfile in full details
+      if logfile is None:
+          logfile = "/dev/null"
+      else:
+          dirname = os.path.dirname(logfile)
+          if dirname and not os.path.exists(dirname):
+              os.makedirs(dirname)
+      # use delay to avoid empty log file
+      # TODO: delay argument requires python27
+      # log_hdlr = logging.FileHandler(logfile, mode="w", delay=True)
+      log_hdlr = logging.FileHandler(logfile, mode="w")
+      log_hdlr.setLevel(logging.DEBUG)
+      log_hdlr.setFormatter(Themes["clean2"])
+      logger.addHandler(log_hdlr)
+
+      # replace excepthook with logger
+      def log_exception(exc_type, exc_value, traceback):
+          logger.error("Oops! We run into troubles:\n>>>")
+          logger.error(exc_value, exc_info=(exc_type, exc_value, traceback))
+      sys.excepthook = log_exception
+   
+      return log
+
+#+END_SRC
+
+#+RESULTS:
+
+
+#+RESULTS:
+: 
+: >>> >>> >>>  test info
+: INFO  test@l1    test info
+: test debug
+: DEBUG test@l1    test debug
 
 * src
-
 ** 启动lsyncd
-*** start-lsyncd
 #+BEGIN_SRC sh :tangle scripts/start-lsyncd.sh :shebang #! /usr/bin/env bash :results none
   # get real script path
   script_path="$0"
@@ -391,15 +496,8 @@
   done
 #+END_SRC
 
-*** 测试
-#+BEGIN_SRC sh
-scripts/start-lsyncd.sh
-#+END_SRC
-
-#+RESULTS:
-: /home/ybyygu/etc/backup/scripts
-
 ** lsyncd配置文件
+*** 笔记
    需要安装: lua-filesystem
 
    见源代码中default.lua, default.checkgauge
@@ -441,20 +539,107 @@ default.checkgauge = {
       5. OnModify
       6. OnMove
    4. default.action ==> onMove, onDelete ...
-** 响应lsyncd事件
+*** src
+#+BEGIN_SRC lua :tangle scripts/isync.lua
+-----
+-- My configuration file for lsyncd.
+-- This needs lsyncd 2.1
+--
+--
+
+require("lfs")
+
+local source_rootdir = lfs.currentdir() .. "/scratch"
+local backup_rootdir = "/btrfs/backup"
+local snapshot_rootdir = "/btrfs/TimeMachine"
+
+
+settings {
+    logfile    = "/tmp/lsyncd.log",
+    statusFile = "/tmp/lsyncd.status",
+	statusInterval = 1,
+    nodaemon   = true,
+    maxDelays = 15,
+}
+
+---
+-- record file change events and make btrfs snapshots accordingly
+--
+iman = {
+    ---
+    -- take snapshot when max_hits reached
+    max_hits = 3,
+
+    current_hits = 0,
+
+    ---
+    -- make btrfs snapshots
+    --
+    take_snapshot = function(event)
+        log("Normal", "taking snapshot...")
+        log("Normal", "./take-snapshot.py " .. backup_rootdir .. " " .. snapshot_rootdir)
+        os.execute("./take-snapshot.py " .. backup_rootdir .. " " .. snapshot_rootdir)
+     end,
+
+    ---
+    -- record hits
+    --
+    hit = function(event)
+        iman.current_hits = iman.current_hits + 1
+        log("Normal", "hitted as " .. iman.current_hits)
+        ---
+        -- reset hits
+        --
+        if iman.current_hits >= iman.max_hits then
+            iman.current_hits = 0
+            iman.take_snapshot(event)
+        end
+    end
+}
+
+local isync = default.rsync
+
+isync.checkgauge.onMove = true
+
+-- called when a process exited.
+-- this can be a rsync command, the startup rsync or the postcmd
+isync.collect = function(agent, exitcode)
+    log("Normal", "collecting here")
+	if not agent.isList and agent.etype == 'Init' then
+        log("Normal", "init procedure")
+    else
+        log("Normal", "iman hit")
+        iman.hit(agent)
+    end
+    --- everything else, forward to default collection handler
+    return default.collect(agent,exitcode)
+end
+
+
+for afile in lfs.dir(source_rootdir) do
+    if afile ~= '.' and afile ~= '..' then
+        local path = source_rootdir .. "/" .. afile
+        local attr = lfs.attributes(path, "mode")
+        if attr == "directory" then
+            source_dir = path
+            target_dir = backup_rootdir .. "/" .. afile
+            -- log("Normal", source_dir .. " ==> " .. target_dir )
+            sync{isync, source=source_dir, target=target_dir, excludeFrom = "isync.exclude"}
+        end
+    end
+end
+
+#+END_SRC
 ** btrfs快照管理  [[elisp:(org-babel-tangle)][输出]]
-*** tangle
-#+BEGIN_SRC python :noweb yes :tangle scripts/snapman.py :shebang #! /usr/bin/env python2
+*** overview
+#+NAME: overview
+#+HEADER: :session test
+#+HEADER: :shebang #! /usr/bin/env python2
+#+HEADER: :results output
+#+BEGIN_SRC python :noweb yes :tangle scripts/snapman.py
   <<header>>
 
-  import os
-  import sys
-  import time
-  import datetime
-  import subprocess
-  import math
-  import random
-  import re
+  <<imports>>
 
   <<setup-logger>>
 
@@ -465,6 +650,23 @@ default.checkgauge = {
 #+END_SRC
 
 #+RESULTS:
+: 
+: ... ... ... ... ... ... ... ... ... ... ... ... >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... >>> ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... >>> ... ... 0
+*** imports
+#+NAME: imports
+#+BEGIN_SRC python :session test
+  import os
+  import sys
+  import time
+  import datetime
+  import subprocess
+  import math
+  import random
+  import re
+  import logging
+#+END_SRC
+
+#+RESULTS: imports
 
 *** header
 #+NAME: header
@@ -489,9 +691,9 @@ default.checkgauge = {
 
 #+END_SRC
 *** setup logger
-#+NAME: setup-logger
+#+NAME: yaml-conf
 #+BEGIN_SRC python :session test
-  YAML_CONF = """
+YAML_CONF = """
   version: 1
   disable_existing_loggers: true
 
@@ -517,40 +719,48 @@ default.checkgauge = {
       class: !!python/name:logging.Formatter
       format: '%(levelname)-05s %(name)s@l%(lineno)-4d %(message)s'
       datefmt: '%d/%m/%Y %H:%M:%S'
-  """
-
-  import yaml
-  import StringIO
-  import logging
-  import logging.config
-
-  config = yaml.load(StringIO.StringIO(YAML_CONF))
-  logging.config.dictConfig(config)
-
-  log = logging.getLogger("isync")
-
+"""
 #+END_SRC
 
+#+RESULTS: yaml-conf
+
+#+NAME: setup-logger
+#+BEGIN_SRC python :session test :results output
+  from guts import setup_logger
+
+  logger = setup_logger("isync")
+
+  logger.info("test info")
+  logger.debug("test debug")
+
+#+END_SRC
+    
 #+RESULTS: setup-logger
+: 
+: >>> >>> >>>  test info
+:  test info
+: test debug
+:  test debug
 
 *** SnapshotManager
 **** tangle
 #+NAME: snapshot-manager
 #+BEGIN_SRC python :results output :session test :noweb yes
   class SnapshotManager(object):
-      def __init__(self, target_subvolume, snapshot_rootdir, max_snapshots_per_day=50, max_snapshot_hits=4):
+      def __init__(self, target_subvolume, snapshot_rootdir, max_snapshots_per_day=20, max_snapshot_hits=4, max_snapshots_total=80):
           self.target_subvolume = target_subvolume
           self.snapshot_rootdir = snapshot_rootdir
           self.max_snapshots_per_day = max_snapshots_per_day
           
           self._snapshot_hits = 0
           self.max_snapshot_hits = max_snapshot_hits
+          self.max_snapshots_total = max_snapshots_total
           
       <<take-snapshot>>
       
       <<delete-snapshot>>
       
-      <<trim-snapshot>>
+      <<trim-snapshots>>
 #+END_SRC
 
 #+RESULTS: snapshot-manager
@@ -564,55 +774,58 @@ default.checkgauge = {
         2. 参数2 快照保存目录: snapshot_dirname
 
 #+NAME: take-snapshot
-#+BEGIN_SRC python
-  def take_snapshot(target_subvolume, snapshot_dirname):
+#+BEGIN_SRC python :results none
+  def take_snapshot(self):
+      """ take one single btrfs snapshot """
       
-      args = "btrfs subvolume snapshot".split()
-      snap_parent_dir = os.path.join(self.snapshot_rootdir, time.strftime("%Y-%m-%d"))
+      snapshot_parent_dir = os.path.join(self.snapshot_rootdir, time.strftime("%Y-%m-%d"))
       
-      log.debug("%s" % snap_parent_dir)
+      if not os.path.exists(snapshot_parent_dir):
+          os.makedirs(snapshot_parent_dir)
+          logger.info("Created snapshot directory: {}".format(snapshot_parent_dir))
+
+      ##
+      # take snapshot only when there is no directory named as snap_name
+      # --------------------------------------------------------------------
+      dirname = "{}:{:02}".format(time.strftime("%H"), int(time.strftime("%M")))
+      snap_name = os.path.join(snapshot_parent_dir, dirname)
+      logger.debug("snapshot directory: {}".format(snap_name))
       
-      if not os.path.exists(snap_parent_dir):
-          os.makedirs(snap_parent_dir)
-          log.info("Created directory: %s" % snap_parent_dir)
-          
-      # to taken snapshot only when there is no directory named as snap_name
-      dirname = "%s:%02i" % (time.strftime("%H"), int(time.strftime("%M")))
-      snap_name = os.path.join(snap_parent_dir, dirname)
       if not os.path.isdir(snap_name):
-          args = ["btrfs", "subvolume", "snapshot", self.target_subvolume, snap_name]
-          log.debug("Called with: %s" % " ".join(args))
-          subprocess.call(args)
+          args = "btrfs subvolume snapshot".split()
+          args.append(self.target_subvolume)
+          args.append(snap_name)        
+          logger.info("Called with: {}".format(" ".join(args)))
+          try:
+              subprocess.check_call(args)
+          except subprocess.CalledProcessError:
+              logger.exception("Failed to take snapshot with btrfs!")
+              raise
       else:
-          log.debug("Delayed for %s" % snap_name)
-      args.append(target_subvolume)
-      args.append(snapshot_dirname)
-      
-      subprocess.check_call(args)
+          logger.debug("Delayed for {}".format(snap_name))
 
 #+END_SRC
 
-#+RESULTS: take-snapshot
-: None
-
-
 **** delete snapshot
-删除单个snapshot, 只需传入snapshot的路径(目录).
-
 #+NAME: delete-snapshot
-#+BEGIN_SRC python
-  def day_time_to_snapshot(day_dir, time_dir):
-      snapshot_path = os.path.join(self.snapshot_rootdir, day_dir, time_dir)
-      return snapshot_path
-
-  def delete_snapshot(snapshot_path):
+#+BEGIN_SRC python :results none
+  def delete_snapshot(self, snapshot_path):
+      """ delete one single snapshot specified by snapshot_path """
+      
       if not os.path.exists(snapshot_path):
-          raise RuntimeError("snapshot directory {} does not exists!".format(snapshot_path))
+          msg ="snapshot directory {} does not exists!".format(snapshot_path)
+          logger.error(msg)
+          raise RuntimeError(msg)
 
-      args = "sudo btrfs subvolume delete".split()
+      args = "btrfs subvolume delete".split()
       args.append(snapshot_path)
-      subprocess.call(args)
-      print(" ".join(args))
+      logger.debug("cmdline: {}".format(" ".join(args)))
+      try:
+          subprocess.check_call(args)
+          logger.info("snapshot removed.")
+      except subprocess.CalledProcessError:
+          logger.exception("Failed to delete btrfs snapshot!")
+          raise
 
 #+END_SRC
 
@@ -626,11 +839,189 @@ default.checkgauge = {
       seq: elapsed_days
       base: maxdays
       """
-      pass
-
-
+      
+      logger.info("no implemented yet.")
 
 #+END_SRC
+
+**** tests
+#+BEGIN_SRC python :session test :noweb eval :results output
+  <<overview>>
+
+  snapman = SnapshotManager("/btrfs/backup", "/tmp/scratch")
+  snapman.take_snapshot()
+  snapman.delete_snapshot("/tmp/scratch/aa")
+#+END_SRC
+
+#+RESULTS:
+#+begin_example
+
+... ... ... ... ... ... ... ... ... ... ... ... >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>>  test info
+ test info
+ test info
+ test info
+ test info
+ test info
+test debug
+ test debug
+ test debug
+ test debug
+ test debug
+ test debug
+>>> >>> ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... >>> ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... >>> ... ... 0
+>>> >>> >>>  snapshot directory: /tmp/scratch/2015-04-21/13:35
+ snapshot directory: /tmp/scratch/2015-04-21/13:35
+ snapshot directory: /tmp/scratch/2015-04-21/13:35
+ snapshot directory: /tmp/scratch/2015-04-21/13:35
+ snapshot directory: /tmp/scratch/2015-04-21/13:35
+ snapshot directory: /tmp/scratch/2015-04-21/13:35
+ Called with: btrfs subvolume snapshot /btrfs/backup /tmp/scratch/2015-04-21/13:35
+ Called with: btrfs subvolume snapshot /btrfs/backup /tmp/scratch/2015-04-21/13:35
+ Called with: btrfs subvolume snapshot /btrfs/backup /tmp/scratch/2015-04-21/13:35
+ Called with: btrfs subvolume snapshot /btrfs/backup /tmp/scratch/2015-04-21/13:35
+ Called with: btrfs subvolume snapshot /btrfs/backup /tmp/scratch/2015-04-21/13:35
+ Called with: btrfs subvolume snapshot /btrfs/backup /tmp/scratch/2015-04-21/13:35
+ERROR: error accessing '/btrfs/backup'
+ Failed to take snapshot with btrfs!
+Traceback (most recent call last):
+  File "<stdin>", line 33, in take_snapshot
+  File "/usr/lib/python2.7/subprocess.py", line 540, in check_call
+    raise CalledProcessError(retcode, cmd)
+CalledProcessError: Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
+ Failed to take snapshot with btrfs!
+Traceback (most recent call last):
+  File "<stdin>", line 33, in take_snapshot
+  File "/usr/lib/python2.7/subprocess.py", line 540, in check_call
+    raise CalledProcessError(retcode, cmd)
+CalledProcessError: Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
+ Failed to take snapshot with btrfs!
+Traceback (most recent call last):
+  File "<stdin>", line 33, in take_snapshot
+  File "/usr/lib/python2.7/subprocess.py", line 540, in check_call
+    raise CalledProcessError(retcode, cmd)
+CalledProcessError: Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
+ Failed to take snapshot with btrfs!
+Traceback (most recent call last):
+  File "<stdin>", line 33, in take_snapshot
+  File "/usr/lib/python2.7/subprocess.py", line 540, in check_call
+    raise CalledProcessError(retcode, cmd)
+CalledProcessError: Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
+ Failed to take snapshot with btrfs!
+Traceback (most recent call last):
+  File "<stdin>", line 33, in take_snapshot
+  File "/usr/lib/python2.7/subprocess.py", line 540, in check_call
+    raise CalledProcessError(retcode, cmd)
+CalledProcessError: Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
+ Failed to take snapshot with btrfs!
+Traceback (most recent call last):
+  File "<stdin>", line 33, in take_snapshot
+  File "/usr/lib/python2.7/subprocess.py", line 540, in check_call
+    raise CalledProcessError(retcode, cmd)
+CalledProcessError: Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
+ Oops! We run into troubles:
+>>>
+ Oops! We run into troubles:
+>>>
+ Oops! We run into troubles:
+>>>
+ Oops! We run into troubles:
+>>>
+ Oops! We run into troubles:
+>>>
+ Oops! We run into troubles:
+>>>
+ Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+  File "<stdin>", line 33, in take_snapshot
+  File "/usr/lib/python2.7/subprocess.py", line 540, in check_call
+    raise CalledProcessError(retcode, cmd)
+CalledProcessError: Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
+ Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+  File "<stdin>", line 33, in take_snapshot
+  File "/usr/lib/python2.7/subprocess.py", line 540, in check_call
+    raise CalledProcessError(retcode, cmd)
+CalledProcessError: Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
+ Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+  File "<stdin>", line 33, in take_snapshot
+  File "/usr/lib/python2.7/subprocess.py", line 540, in check_call
+    raise CalledProcessError(retcode, cmd)
+CalledProcessError: Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
+ Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+  File "<stdin>", line 33, in take_snapshot
+  File "/usr/lib/python2.7/subprocess.py", line 540, in check_call
+    raise CalledProcessError(retcode, cmd)
+CalledProcessError: Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
+ Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+  File "<stdin>", line 33, in take_snapshot
+  File "/usr/lib/python2.7/subprocess.py", line 540, in check_call
+    raise CalledProcessError(retcode, cmd)
+CalledProcessError: Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
+ Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+  File "<stdin>", line 33, in take_snapshot
+  File "/usr/lib/python2.7/subprocess.py", line 540, in check_call
+    raise CalledProcessError(retcode, cmd)
+CalledProcessError: Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
+snapshot directory /tmp/scratch/aa does not exists!
+ snapshot directory /tmp/scratch/aa does not exists!
+ snapshot directory /tmp/scratch/aa does not exists!
+ snapshot directory /tmp/scratch/aa does not exists!
+ snapshot directory /tmp/scratch/aa does not exists!
+ snapshot directory /tmp/scratch/aa does not exists!
+ Oops! We run into troubles:
+>>>
+ Oops! We run into troubles:
+>>>
+ Oops! We run into troubles:
+>>>
+ Oops! We run into troubles:
+>>>
+ Oops! We run into troubles:
+>>>
+ Oops! We run into troubles:
+>>>
+ snapshot directory /tmp/scratch/aa does not exists!
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+  File "<stdin>", line 47, in delete_snapshot
+RuntimeError: snapshot directory /tmp/scratch/aa does not exists!
+ snapshot directory /tmp/scratch/aa does not exists!
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+  File "<stdin>", line 47, in delete_snapshot
+RuntimeError: snapshot directory /tmp/scratch/aa does not exists!
+ snapshot directory /tmp/scratch/aa does not exists!
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+  File "<stdin>", line 47, in delete_snapshot
+RuntimeError: snapshot directory /tmp/scratch/aa does not exists!
+ snapshot directory /tmp/scratch/aa does not exists!
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+  File "<stdin>", line 47, in delete_snapshot
+RuntimeError: snapshot directory /tmp/scratch/aa does not exists!
+ snapshot directory /tmp/scratch/aa does not exists!
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+  File "<stdin>", line 47, in delete_snapshot
+RuntimeError: snapshot directory /tmp/scratch/aa does not exists!
+ snapshot directory /tmp/scratch/aa does not exists!
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+  File "<stdin>", line 47, in delete_snapshot
+RuntimeError: snapshot directory /tmp/scratch/aa does not exists!
+#+end_example
+
 *** main function
 #+NAME: main-function
 #+BEGIN_SRC python  :session test :results output
