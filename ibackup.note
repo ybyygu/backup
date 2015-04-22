@@ -4,6 +4,11 @@
 #+PROPERTY: mkdirp yes
 #+PROPERTY: padline no
 
+#+name: UPDATED
+#+BEGIN_SRC rst
+Updated: 2015-04-22 14:57
+#+END_SRC
+
 * 摘要
   * 将isync-data下的数据 *实时* 同步至isync-backup下
   * 在isync-snapshots下做快照, 保存版本信息
@@ -57,428 +62,319 @@
 * install
   1. aur: lsyncd
   2. 需要lua中的lfs包 lua51-filesystem
-* 多余备份的清理算法
-** 流程
-*** 基于指数衰减, 或牛顿冷却定律.
-    其实与玻尔兹曼分布一回事.
+* logging
+** 相关资料: [[http://victorlin.me/posts/2012/08/26/good-logging-practice-in-python][Good logging practice in Python]]
+** guts中的设置(很多问题)
+   #+NAME: bad-logger
+   #+BEGIN_SRC python :results output
+     import logging
+     import sys
 
-   1. 随着时间的增加, 备份保留的意义在递减.
+     LogThemeNull = logging.Formatter(
+         " %(message)s")
+     LogThemeSimple = logging.Formatter(
+         "[%(levelname)s] %(message)s")
+     LogThemeClean = logging.Formatter(
+         "[%(name)s|%(lineno)04d %(levelname)s] %(message)s")
+     LogThemeClean2 = logging.Formatter(
+         "[%(name)s|%(lineno)04d %(levelname)5s %(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+     LogThemeFull = logging.Formatter(
+         "\n%(asctime)s - %(name)s.%(funcName)s, line %(lineno)d\n" \
+         + "-"*80 + "\n [%(levelname)s] %(message)s",
+         datefmt="%Y-%m-%d %H:%M:%S")
 
-*** 根据存活概率确定备份的去留
-    1. 选择某段时间间隔delta_t, 计算该区间内备份的数目current_snapshots
-    2. 通过积分, 计算delta_t容许的备份数 allowed_snapshots
-    3. 如果allowed_snapshots >= current_snapshots, 不操作. 反之清理掉
-       多余的.
-**** src
+     class ConsoleHandler(logging.StreamHandler):
+         """
+         log messages to console screen
+         >> direct logging.error and above to stderr, others to stdout
+         """
+         def __init__(self, *args, **kwargs):
+             logging.StreamHandler.__init__(self, *args, **kwargs)
 
-#+NAME: weighted-choose-one
-#+BEGIN_SRC python :session test :results output
-  import random
-  import bisect
-  import operator
+         def emit(self, record):
+             if record.levelno >= logging.WARN:
+                 self.stream = sys.stderr
+             else:
+                 self.stream = sys.stdout
+             logging.StreamHandler.emit(self, record)
 
-  def accumulate(iterable, func=operator.add):
-      it = iter(iterable)
-      total = next(it)
-      yield total
-      for element in it:
-          total = func(total, element)
-          yield total
+     def setup_logger(name=None, theme="null", logfile=None, verbose=True, root=False):
+         """ if name is empty, you get the root logger
+         @root: root logger of not
+         """
+         
+         Themes = {"clean":LogThemeClean,
+                   "clean2": LogThemeClean2,
+                   "simple":LogThemeSimple,
+                   "null":LogThemeNull,
+                   "full":LogThemeFull
+                   }
 
-  def weighted_choose_one(choices, weights):
-      """ select single one based on their weights """
+         # make levelname shorter
+         if theme in ("clean", "simple"):
+             logging.addLevelName(logging.DEBUG, "D")
+             logging.addLevelName(logging.INFO, "I")
+             logging.addLevelName(logging.WARN, "W")
+             logging.addLevelName(logging.ERROR, "E")
+
+         if name and not root:
+             logger = logging.getLogger(name)
+         else:
+             logger = logging.getLogger()
+             
+         logger.setLevel(logging.DEBUG)
+         
+         # keep console screen clean
+         console_hdlr = ConsoleHandler()
+         if verbose:
+             console_hdlr.setLevel(logging.DEBUG)
+         else:
+             console_hdlr.setLevel(logging.INFO)
+         theme = Themes[theme.lower()]
+         console_hdlr.setFormatter(theme)
+         # logger.addHandler(console_hdlr)
+
+         # send debug info to logfile in full details
+         if logfile is None:
+             logfile = "/dev/null"
+         else:
+             dirname = os.path.dirname(logfile)
+             if dirname and not os.path.exists(dirname):
+                 os.makedirs(dirname)
+         # use delay to avoid empty log file
+         # TODO: delay argument requires python27
+         # log_hdlr = logging.FileHandler(logfile, mode="w", delay=True)
+         log_hdlr = logging.FileHandler(logfile, mode="w")
+         log_hdlr.setLevel(logging.DEBUG)
+         log_hdlr.setFormatter(Themes["clean2"])
+         logger.addHandler(log_hdlr)
+
+         # replace excepthook with logger
+         def log_exception(exc_type, exc_value, traceback):
+             logger.error("Oops! We run into troubles:\n>>>")
+             logger.error(exc_value, exc_info=(exc_type, exc_value, traceback))
+         sys.excepthook = log_exception
       
-      assert len(choices) == len(weights)
-      cumdist = list(accumulate(weights))
-      x = random.random() * cumdist[-1]
-      return bisect.bisect(cumdist, x)
+         return logger
+
+     logger = setup_logger("test")
+     logger.info("here")
 
 #+END_SRC
 
-#+RESULTS: weighted-choose-one
+** configurations
+   #+name: yaml-conf
+   #+begin_src yaml
+     version: 1
+     disable_existing_loggers: true
 
+     root:
+       level: !!python/name:logging.NOTSET
+       handlers: [console, logfile]
 
-基于权重选择多个保留项
-#+NAME: weighted-choose
-#+BEGIN_SRC python :session test :results output
-  def weighted_choose(choices, weights, ncount):
-      """ choose n-choices one time according their weights """
-      
-      assert len(choices) > ncount
-      
-      chosen = []
-      for it in range(ncount):
-          idx = weighted_choose_one(choices, weights)
-          chosen.append(choices[idx])
-          del choices[idx]
-          del weights[idx]
-      return sorted(chosen)
+     handlers:
+         logfile:
+           class: logging.FileHandler
+           filename: snapman.log
+           formatter: simpleFormatter
+           delay: True
+           level: !!python/name:logging.NOTSET
+         # direct all logging msg to stdout instead of stderr
+         console:
+           class: logging.StreamHandler
+           stream: ext://sys.stdout
+           formatter: simpleFormatter
+           level: !!python/name:logging.NOTSET
 
-#+END_SRC
-
-#+RESULTS: weighted-choose
-
-
-**** 测试
-
-#+tblname: table1
-| choices | weights |
-|---------+---------|
-| dir1    |    0.99 |
-| dir2    |    0.87 |
-| dir3    |    0.80 |
-| dir4    |    0.75 |
-| dir5    |     0.7 |
-
-#+tblname: table2
-|      adirs | bdirs |
-|------------+-------|
-| 2015-04-19 | 22:00 |
-| 2015-04-19 | 21:00 |
-| 2015-04-18 | 20:01 |
-| 2015-04-18 | 21:03 |
-| 2015-04-17 | 12:04 |
-| 2015-04-16 | 11:05 |
-| 2015-04-13 | 12:06 |
-| 2015-03-13 | 12:07 |
-
-#+begin_src python :var adirs=table2[,0] :var bdirs=table2[,1] :results output :session test
-  from __future__ import division
-  import datetime
-
-  max_hours = 500
-  max_snapshots = 80
-  now = datetime.datetime.now()
-  hours_list = [ ]
-
-  choices = []
-  weights = []
-
-  def snapshot_dir_to_datetime(day_dir, time_dir):
-      return datetime.datetime.strptime("{}/{}".format(day_dir, time_dir), "%Y-%m-%d/%H:%M")
-
-  def calc_snapshot_score(day_dir, time_dir):
-      delta = now - snapshot_dir_to_datetime(day_dir, time_dir)
-      hours = delta.total_seconds() / 3600
-      #print(hours)
-      return evaluate_decay_score(hours, max_snapshots)
-
-  for adir, bdir in zip(adirs, bdirs):
-      score = calc_snapshot_score(adir, bdir)
-      #print("{}/{}: {:.2f}".format(adir, bdir, score))
-      choices.append((adir, bdir))
-      weights.append(score)
-
-  def calc_allowed_snapshots(choices):
-      """ calculate how many snapshots allowed to keep """
-      
-      assert len(choices) >= 2
-      first, last = choices[0], choices[-1]
-      
-      d1 = (now - snapshot_dir_to_datetime(*last)).total_seconds() / 3600
-      d2 = (now - snapshot_dir_to_datetime(*first)).total_seconds() / 3600
-      return evaluate_decay_area(d1, d2, max_snapshots)
-
-
-  def bichoose(ichoices, current=None):
-      if current is None:
-          choice1 = next(ichoices)
-      else:
-          choice1 = current
-          
-      finished = False
-      for choice2 in ichoices:
-          allowed = calc_allowed_snapshots([choice1, choice2])
-          print("{} {} {:.1f}".format(choice1[-1], choice2[-1], allowed))
-          if allowed >= 1:
-              score1 = calc_snapshot_score(*choice1)
-              score2 = calc_snapshot_score(*choice2)
-              #idx = weighted_choose_one([choice1, choice2], [score1, score2])
-              #yield choice1 if idx == 0 else choice2
-              yield choice1
-              break
-      else:
-          finished = True
-          yield choice1
-          
-      if not finished:
-          for c in bichoose(ichoices, current=choice2):
-              yield c
-
-  ichoices = iter(choices)
-
-  for c in bichoose(ichoices):
-      print(c)
-
-#+end_src
-
-#+RESULTS:
-#+begin_example
-
->>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> ... ... >>> ... ... ... ... ... >>> ... ... ... ... ... >>> ... ... ... ... ... ... ... ... ... >>> >>> ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... >>> >>> >>> ... ... 22:00 21:00 0.8
-22:00 20:01 17.4
-('2015-04-19', '22:00')
-20:01 21:03 0.6
-20:01 12:04 14.9
-('2015-04-18', '20:01')
-12:04 11:05 8.1
-('2015-04-17', '12:04')
-11:05 12:06 13.1
-('2015-04-16', '11:05')
-12:06 12:07 9.1
-('2015-04-13', '12:06')
-('2015-03-13', '12:07')
-#+end_example
-
-** src
-
-#+NAME: evalue-decay
-#+BEGIN_SRC python :results output :session test :cache no
-  from __future__ import division
-  import math
-
-  def evaluate_decay_score(elapsed, kbt=600*0.083145):
-      """ use Boltzmann distribution instead """
-      
-      assert elapsed >= 0 and kbt > 0
-      
-      score = math.exp(-1*elapsed / kbt)
-      return score
-
-  def evaluate_decay_area(point_from, point_to, kbt=600*0.083145):
-      """ the Boltzmann distribution aread """
-      
-      if point_from > point_to:
-          point_from, point_to = point_to, point_from
-      
-      s1 = math.exp(-1*point_from / kbt)
-      s2 = math.exp(-1*point_to / kbt)
-      return (s1 - s2)*kbt
-#+END_SRC
-
-#+RESULTS: evalue-decay
-
-测试下看:
-#+BEGIN_SRC python :session test :results output :cache no
-  print(evaluate_decay_score(0, 300))
-  print(evaluate_decay_score(10, 30))
-  print(evaluate_decay_area(0, 500, 80))
-#+END_SRC
-
-#+RESULTS:
-: 1.0
-: 0.716531310574
-: 79.8455636691
-
-
-#+BEGIN_SRC python :session test :results output :cache no
-  max_days = 500
-  max_snapshots = 80
-  print(evaluate_decay_area(0, max_days, max_snapshots))
-
-  def itp(idays, current=None):
-      # the starting point
-      if current is None:
-          d1 = next(idays)
-          yield d1
-      else:
-          d1 = current
-      
-      # indicate if idays has been exhausted
-      empty = True
-      for d2 in idays:
-          empty = False
-          s = evaluate_decay_area(d1, d2, max_snapshots)
-          #print("{}-{} = {:.2f}".format(d1, d2, s))
-          if s >= 1:
-              break
-      else:
-          empty = True
-          
-      if not empty:
-          yield d2
-          for p in itp(idays, current=d2):
-              yield p
-
-  idays = iter(range(max_days))
-  for d in itp(idays):
-      print(d)
-
-#+END_SRC
-
-#+RESULTS:
-#+begin_example
-
->>> 79.8455636691
->>> ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... >>> >>> ... ... 0
-2
-4
-6
-8
-10
-12
-14
-16
-18
-20
-22
-24
-26
-28
-30
-32
-34
-36
-38
-40
-42
-44
-46
-48
-50
-52
-54
-56
-59
-62
-65
-68
-71
-74
-77
-80
-83
-86
-89
-93
-97
-101
-105
-109
-114
-119
-124
-129
-135
-141
-148
-155
-163
-172
-182
-193
-206
-221
-239
-262
-295
-351
-#+end_example
-* logger
-#+NAME: logger
-#+BEGIN_SRC python :session test
-  import logging
-
-  LogThemeNull = logging.Formatter(
-      " %(message)s")
-  LogThemeSimple = logging.Formatter(
-      "[%(levelname)s] %(message)s")
-  LogThemeClean = logging.Formatter(
-      "[%(name)s|%(lineno)04d %(levelname)s] %(message)s")
-  LogThemeClean2 = logging.Formatter(
-      "[%(name)s|%(lineno)04d %(levelname)5s %(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
-  LogThemeFull = logging.Formatter(
-      "\n%(asctime)s - %(name)s.%(funcName)s, line %(lineno)d\n" \
-      + "-"*80 + "\n [%(levelname)s] %(message)s",
-      datefmt="%Y-%m-%d %H:%M:%S")
-
-  class ConsoleHandler(logging.StreamHandler):
-      """
-      log messages to console screen
-      >> direct logging.error and above to stderr, others to stdout
-      """
-      def __init__(self, *args, **kwargs):
-          logging.StreamHandler.__init__(self, *args, **kwargs)
-
-      def emit(self, record):
-          if record.levelno >= logging.WARN:
-              self.stream = sys.stderr
-          else:
-              self.stream = sys.stdout
-          logging.StreamHandler.emit(self, record)
-
-  def setup_logger(name=None, theme="null", logfile=None, verbose=True, root=False):
-      """ if name is empty, you get the root logger
-      @root: root logger of not
-      """
-      
-      Themes = {"clean":LogThemeClean,
-                "clean2": LogThemeClean2,
-                "simple":LogThemeSimple,
-                "null":LogThemeNull,
-                "full":LogThemeFull
-                }
-
-      # make levelname shorter
-      if theme in ("clean", "simple"):
-          logging.addLevelName(logging.DEBUG, "D")
-          logging.addLevelName(logging.INFO, "I")
-          logging.addLevelName(logging.WARN, "W")
-          logging.addLevelName(logging.ERROR, "E")
-
-      if name and not root:
-          log = logging.getLogger(name)
-      else:
-          log = logging.getLogger()
-          
-      logger.setLevel(logging.DEBUG)
-      
-      # keep console screen clean
-      console_hdlr = ConsoleHandler()
-      if verbose:
-          console_hdlr.setLevel(logging.DEBUG)
-      else:
-          console_hdlr.setLevel(logging.INFO)
-      theme = Themes[theme.lower()]
-      console_hdlr.setFormatter(theme)
-      logger.addHandler(console_hdlr)
-
-      # send debug info to logfile in full details
-      if logfile is None:
-          logfile = "/dev/null"
-      else:
-          dirname = os.path.dirname(logfile)
-          if dirname and not os.path.exists(dirname):
-              os.makedirs(dirname)
-      # use delay to avoid empty log file
-      # TODO: delay argument requires python27
-      # log_hdlr = logging.FileHandler(logfile, mode="w", delay=True)
-      log_hdlr = logging.FileHandler(logfile, mode="w")
-      log_hdlr.setLevel(logging.DEBUG)
-      log_hdlr.setFormatter(Themes["clean2"])
-      logger.addHandler(log_hdlr)
-
-      # replace excepthook with logger
-      def log_exception(exc_type, exc_value, traceback):
-          logger.error("Oops! We run into troubles:\n>>>")
-          logger.error(exc_value, exc_info=(exc_type, exc_value, traceback))
-      sys.excepthook = log_exception
+     formatters:
+       simpleFormatter:
+         class: !!python/name:logging.Formatter
+         format: '%(levelname)-05s %(funcName)s@l%(lineno)-4d %(message)s'
+         datefmt: '%d/%m/%Y %H:%M:%S'
+   #+end_src
    
-      return log
+** basic-logger
+   #+NAME: basic-logger
+   #+HEADER: :noweb yes
+   #+BEGIN_SRC python :results output :session logger
+     def get_logger(name=None, debug=True):
+         import logging
+         import logging.config
+         import StringIO
+         import yaml
+         
+         yaml_conf = """
+     <<yaml-conf>>
+     """
+         
+         config = yaml.load(StringIO.StringIO(yaml_conf))
+         logging.config.dictConfig(config)
+         
+         logger = logging.getLogger(name or __name__)
+         level = logging.DEBUG if debug else logging.INFO
+         logger.setLevel(level)
+         
+         return logger
+         
+   #+END_SRC
 
-#+END_SRC
+   #+RESULTS: basic-logger
 
-#+RESULTS:
+   #+NAME: basic-logger-test
+   #+HEADER: :tangle log.py
+   #+BEGIN_SRC python :results output :noweb yes
+     <<basic-logger>>
+
+     def test_logger():
+         logger.debug("msg from a function")
+
+     print("good")
+     logger = get_logger()
+     logger.debug("debug here")
+     logger.info("info here")
+     logger.error("error test")
+     test_logger()
 
 
-#+RESULTS:
-: 
-: >>> >>> >>>  test info
-: INFO  test@l1    test info
-: test debug
-: DEBUG test@l1    test debug
+   #+END_SRC
 
-* src
+   #+RESULTS: basic-logger-test
+   : good
+   : DEBUG <module>@l51   debug here
+   : INFO  <module>@l52   info here
+   : ERROR <module>@l53   error test
+   : DEBUG test_logger@l47   msg from a function
+
+* 备份清理算法
+** 指数衰减.
+   随着时间的增加, 备份保留的意义递减. 这被称为牛顿冷却定律, 其实与玻
+   尔兹曼分布一回事.
+*** evaluate-decay
+    #+NAME: evaluate-decay
+    #+BEGIN_SRC python :results output :session test :cache no
+      import math
+
+      def evaluate_decay_score(elapsed, kbt=600*0.083145):
+          """ use Boltzmann distribution instead """
+          
+          assert elapsed >= 0 and kbt > 0
+          
+          score = math.exp(-1*elapsed / kbt)
+          return score
+
+      def evaluate_decay_area(point_from, point_to, kbt=600*0.083145):
+          """ the Boltzmann distribution area (integration) """
+          
+          if point_from > point_to:
+              point_from, point_to = point_to, point_from
+          
+          s1 = math.exp(-1*point_from / kbt)
+          s2 = math.exp(-1*point_to / kbt)
+          return (s1 - s2)*kbt
+    #+END_SRC
+
+    测试下看:
+    #+BEGIN_SRC python :results output :cache no :noweb eval
+      <<evaluate-decay>>
+
+      print(evaluate_decay_score(0, 300))
+      print(evaluate_decay_score(20, 30))
+      print(evaluate_decay_area(0, 24, 80))
+      print(evaluate_decay_area(0, 500, 80))
+    #+END_SRC
+
+    #+RESULTS:
+    : 1.0
+    : 0.367879441171
+    : 50.5696447063
+    : 79.9270494428
+
+    如选kbt=80, 一天(24h)中可保留约51个备份, 约下的分布在约三周的时间
+    (500h)长度的序列里.
+
+** 备份清理
+   1. 各个备份, 按时间序, 组成一列.
+      : dir1, dir2, dir3, ..., dir9
+   2. 从序列中最近的开始, 向后选择一个, 二者做比较.
+      : dir1 vs dir2
+      : dir1 vs dir3
+   3. 通过积分公式, 容易算出这两个备份所组成的时间区域容许的最大备份数
+      目alowed_snapshots.
+   4. 如果allowed_snapshots < 1, 选择下一个备份, 继续2和3步. 直到最大
+      两个备份的时间间隔足够的长, 满足指数衰减的要求. 然后循环下去, 构
+      建一个稀疏些的备份序列.
+      : dir1, dir4, dir9, ...
+   5. 清除非保留队列里的备份. 任务完成.
+*** tests    
+    #+BEGIN_SRC python :noweb eval
+      <<imports>>
+
+      <<trim-snapshots>>
+
+      for adir, bdir in zip(adirs, bdirs):
+          score = calc_snapshot_score(adir, bdir)
+          #print("{}/{}: {:.2f}".format(adir, bdir, score))
+          choices.append((adir, bdir))
+          weights.append(score)
+                  
+      ichoices = iter(choices)
+      for c in bichoose(ichoices):
+          print(c)
+          
+    #+END_SRC
+
+** 权重选择
+   备份过程暂时用不上.
+
+*** 基于权重选择单一项(赌轮盘算法)
+
+    #+NAME: weighted-choose-one
+    #+BEGIN_SRC python :session test :results output
+      import random
+      import bisect
+      import operator
+
+      def accumulate(iterable, func=operator.add):
+          it = iter(iterable)
+          total = next(it)
+          yield total
+          for element in it:
+              total = func(total, element)
+              yield total
+
+      def weighted_choose_one(choices, weights):
+          """ select single one based on their weights """
+          
+          assert len(choices) == len(weights)
+          cumdist = list(accumulate(weights))
+          x = random.random() * cumdist[-1]
+          return bisect.bisect(cumdist, x)
+
+    #+END_SRC
+    
+    #+RESULTS: weighted-choose-one
+
+*** 基于权重选择多个项
+   #+NAME: weighted-choose
+   #+BEGIN_SRC python :session test :results output
+     def weighted_choose(choices, weights, ncount):
+         """ choose n-choices one time according their weights """
+         
+         assert len(choices) > ncount
+         
+         chosen = []
+         for it in range(ncount):
+             idx = weighted_choose_one(choices, weights)
+             chosen.append(choices[idx])
+             del choices[idx]
+             del weights[idx]
+         return sorted(chosen)
+
+   #+END_SRC
+   
+   #+RESULTS: weighted-choose
+
+* lsyncd
 ** 启动lsyncd
 #+BEGIN_SRC sh :tangle scripts/start-lsyncd.sh :shebang #! /usr/bin/env bash :results none
   # get real script path
@@ -630,8 +526,8 @@ for afile in lfs.dir(source_rootdir) do
 end
 
 #+END_SRC
-** btrfs快照管理  [[elisp:(org-babel-tangle)][输出]]
-*** overview
+* snapman.py [[elisp:(org-babel-tangle)][tangle]]
+** outline
 #+NAME: overview
 #+HEADER: :session test
 #+HEADER: :shebang #! /usr/bin/env python2
@@ -643,18 +539,20 @@ end
 
   <<setup-logger>>
 
-  <<snapshot-manager>>
+  <<evaluate-decay>>
 
-  <<main-function>>
+  <<snapshot-manager>>
 
 #+END_SRC
 
 #+RESULTS:
 : 
 : ... ... ... ... ... ... ... ... ... ... ... ... >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... >>> ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... >>> ... ... 0
-*** imports
+** imports
 #+NAME: imports
 #+BEGIN_SRC python :session test
+  from __future__ import division
+
   import os
   import sys
   import time
@@ -664,11 +562,12 @@ end
   import random
   import re
   import logging
+
 #+END_SRC
 
 #+RESULTS: imports
 
-*** header
+** header
 #+NAME: header
 #+BEGIN_SRC python
   # -*- coding: utf-8 -*-
@@ -685,67 +584,50 @@ end
   #       UPDATED: 
   #====================================================================#
 
-  __VERSION__ = '0.1.0'
-  __UPDATED__ = '2015-04-20 17:52'
-
-
-#+END_SRC
-*** setup logger
-#+NAME: yaml-conf
-#+BEGIN_SRC python :session test
-YAML_CONF = """
-  version: 1
-  disable_existing_loggers: true
-
-  root:
-    level: !!python/name:logging.NOTSET
-    handlers: [logfile, console]
-
-  handlers:
-      logfile:
-        class: logging.FileHandler
-        filename: isync.log
-        formatter: simpleFormatter
-        delay: True
-        level: !!python/name:logging.NOTSET
-      console:
-        class: logging.StreamHandler
-        stream: ext://sys.stdout
-        formatter: simpleFormatter
-        level: !!python/name:logging.NOTSET
-
-  formatters:
-    simpleFormatter:
-      class: !!python/name:logging.Formatter
-      format: '%(levelname)-05s %(name)s@l%(lineno)-4d %(message)s'
-      datefmt: '%d/%m/%Y %H:%M:%S'
-"""
 #+END_SRC
 
-#+RESULTS: yaml-conf
+** setup logger
+   #+NAME: setup-logger
+   #+BEGIN_SRC python :noweb yes :results none
+     # --------------------------------------------------------------------
+     # setup global logger
+     # --------------------------------------------------------------------
 
-#+NAME: setup-logger
-#+BEGIN_SRC python :session test :results output
-  from guts import setup_logger
+     <<basic-logger>>
 
-  logger = setup_logger("isync")
+     logger = get_logger("isync")
 
-  logger.info("test info")
-  logger.debug("test debug")
+   #+END_SRC
 
-#+END_SRC
+** class SnapshotManager
+*** UML
+    #+begin_src plantuml :file test.png
+      class SnapshotManager {
+      + take_snapshot
+      + delete_snapshot
+      + trim_snapshots 
+      }
+
+      take_snapshot : dir_to_snapshot
+      delete_snapshot --> dir_to_snapshot
+      trim_snapshot --> dir_to_snapshot
+      trim_snapshots --> delete_snapshot
+      delete_snapshot --> _delete_snapshot
+
+
+
+    #+end_src
+
+    #+RESULTS:
+    [[file:test.png]]
     
-#+RESULTS: setup-logger
-: 
-: >>> >>> >>>  test info
-:  test info
-: test debug
-:  test debug
-
-*** SnapshotManager
-**** tangle
+*** outline
 #+NAME: snapshot-manager
 #+BEGIN_SRC python :results output :session test :noweb yes
+  # --------------------------------------------------------------------
+  # SnapshotManager class
+  # --------------------------------------------------------------------
+
   class SnapshotManager(object):
       def __init__(self, target_subvolume, snapshot_rootdir, max_snapshots_per_day=20, max_snapshot_hits=4, max_snapshots_total=80):
           self.target_subvolume = target_subvolume
@@ -765,266 +647,227 @@ YAML_CONF = """
 
 #+RESULTS: snapshot-manager
 
-**** take snapshot
-     BARFS 快照.
-     1. 根据当前的时间, 确定快照保存的目录名: snapshot_dirname.
-     2. 如果同名的快照已存在, 则不操作.
-     3. 使用"sudo btrfs subvolume snapshot" 来制作快照.
-        1. 参数1 目标子卷名: target_subvolume
-        2. 参数2 快照保存目录: snapshot_dirname
+*** take snapshot
+    BTRFS 快照.
+    1. 根据当前的时间, 确定快照保存的目录名: snapshot_dirname.
+    2. 如果同名的快照已存在, 则不操作.
 
-#+NAME: take-snapshot
-#+BEGIN_SRC python :results none
-  def take_snapshot(self):
-      """ take one single btrfs snapshot """
-      
-      snapshot_parent_dir = os.path.join(self.snapshot_rootdir, time.strftime("%Y-%m-%d"))
-      
-      if not os.path.exists(snapshot_parent_dir):
-          os.makedirs(snapshot_parent_dir)
-          logger.info("Created snapshot directory: {}".format(snapshot_parent_dir))
+    #+NAME: take-snapshot
+    #+BEGIN_SRC python :results none
+      def take_snapshot(self):
+          """ take one single btrfs snapshot """
+          
+          snapshot_parent_dir = os.path.join(self.snapshot_rootdir, time.strftime("%Y-%m-%d"))
+          
+          if not os.path.exists(snapshot_parent_dir):
+              os.makedirs(snapshot_parent_dir)
+              logger.info("Created snapshot directory: {}".format(snapshot_parent_dir))
 
-      ##
-      # take snapshot only when there is no directory named as snap_name
-      # --------------------------------------------------------------------
-      dirname = "{}:{:02}".format(time.strftime("%H"), int(time.strftime("%M")))
-      snap_name = os.path.join(snapshot_parent_dir, dirname)
-      logger.debug("snapshot directory: {}".format(snap_name))
-      
-      if not os.path.isdir(snap_name):
-          args = "btrfs subvolume snapshot".split()
-          args.append(self.target_subvolume)
-          args.append(snap_name)        
-          logger.info("Called with: {}".format(" ".join(args)))
+          ##
+          # take snapshot only when there is no directory named as snap_name
+          # --------------------------------------------------------------------
+          dirname = "{}:{:02}".format(time.strftime("%H"), int(time.strftime("%M")))
+          snap_name = os.path.join(snapshot_parent_dir, dirname)
+          logger.debug("snapshot directory: {}".format(snap_name))
+          
+          if not os.path.isdir(snap_name):
+              args = "btrfs subvolume snapshot".split()
+              args.append(self.target_subvolume)
+              args.append(snap_name)        
+              logger.info("Called with: {}".format(" ".join(args)))
+              try:
+                  subprocess.check_call(args)
+              except subprocess.CalledProcessError:
+                  logger.exception("Failed to take snapshot with btrfs!")
+                  raise
+          else:
+              logger.debug("Delayed for {}".format(snap_name))
+
+    #+END_SRC
+
+*** delete snapshot
+    #+NAME: delete-snapshot
+    #+BEGIN_SRC python :results none
+      def _delete_snapshot_by_path(self, snapshot_path):
+          """ delete one single snapshot specified by snapshot_path """
+          
+          if not os.path.exists(snapshot_path):
+              msg ="snapshot directory {} does not exists!".format(snapshot_path)
+              logger.error(msg)
+              raise RuntimeError(msg)
+
+          args = "btrfs subvolume delete".split()
+          args.append(snapshot_path)
+          logger.debug("cmdline: {}".format(" ".join(args)))
           try:
               subprocess.check_call(args)
+              logger.info("snapshot removed.")
           except subprocess.CalledProcessError:
-              logger.exception("Failed to take snapshot with btrfs!")
+              logger.exception("Failed to delete btrfs snapshot!")
               raise
-      else:
-          logger.debug("Delayed for {}".format(snap_name))
+          
+      def delete_snapshot(self, snapshot):
+          """ delete one single snapshot """
 
-#+END_SRC
+          if type(snapshot) not in (list, tuple):
+              logger.error("wrong argument specified: {}".format(snapshot))
+              return
 
-**** delete snapshot
-#+NAME: delete-snapshot
-#+BEGIN_SRC python :results none
-  def delete_snapshot(self, snapshot_path):
-      """ delete one single snapshot specified by snapshot_path """
-      
-      if not os.path.exists(snapshot_path):
-          msg ="snapshot directory {} does not exists!".format(snapshot_path)
-          logger.error(msg)
-          raise RuntimeError(msg)
+          assert len(snapshot) == 2
+          day_dir, time_dir = snapshot
+          
+          snapshot_path = os.path.join(day_dir, time_dir)
+          logger.info("try to delete: {}/{}".format(day_dir, time_dir))
+          self._delete_snapshot_by_path(snapshot_path)
+          
+    #+END_SRC
 
-      args = "btrfs subvolume delete".split()
-      args.append(snapshot_path)
-      logger.debug("cmdline: {}".format(" ".join(args)))
-      try:
-          subprocess.check_call(args)
-          logger.info("snapshot removed.")
-      except subprocess.CalledProcessError:
-          logger.exception("Failed to delete btrfs snapshot!")
-          raise
+*** trim-snapshots
+    #+NAME: trim-snapshots
+    #+begin_src python
+      def _snapshot_dir_to_datetime(self, day_dir, time_dir):
+          return datetime.datetime.strptime("{}/{}".format(day_dir, time_dir), "%Y-%m-%d/%H:%M")
 
-#+END_SRC
+      def _calc_snapshot_score(self, day_dir, time_dir):
+          now = datetime.datetime.now()
+          delta = now - self._snapshot_dir_to_datetime(day_dir, time_dir)
+          hours = delta.total_seconds() / 3600
+          logger.debug(hours)
+          return evaluate_decay_score(hours, self.max_snapshots_total)
 
-**** trim snapshots
-#+NAME: trim-snapshots
-#+BEGIN_SRC python
-  def trim_snapshots(self, maxdays=15, maxdel=2):
-      """ trim outdated snapshots with some intelligence
+      def _calc_allowed_snapshots(self, choices):
+          """ calculate how many snapshots allowed to keep """
+          
+          assert len(choices) >= 2
+          first, last = choices[0], choices[-1]
+          
+          now = datetime.datetime.now()
+          d1 = (now - self._snapshot_dir_to_datetime(*last)).total_seconds() / 3600
+          d2 = (now - self._snapshot_dir_to_datetime(*first)).total_seconds() / 3600
+          return evaluate_decay_area(d1, d2, self.max_snapshots_total)
 
-      equation: 1 - log(seq, base)
-      seq: elapsed_days
-      base: maxdays
-      """
-      
-      logger.info("no implemented yet.")
+      def _bichoose(self, ichoices, current=None):
+          if current is None:
+              choice1 = next(ichoices)
+          else:
+              choice1 = current
+              
+          finished = False
+          for choice2 in ichoices:
+              allowed = self._calc_allowed_snapshots([choice1, choice2])
+              logger.debug("{} {} {:.1f}".format(choice1[-1], choice2[-1], allowed))
+              if allowed >= 1:
+                  score1 = self._calc_snapshot_score(*choice1)
+                  score2 = self._calc_snapshot_score(*choice2)
+                  #idx = weighted_choose_one([choice1, choice2], [score1, score2])
+                  #yield choice1 if idx == 0 else choice2
+                  yield choice1
+                  break
+          else:
+              finished = True
+              yield choice1
+              
+          if not finished:
+              for c in self._bichoose(ichoices, current=choice2):
+                  yield c
 
-#+END_SRC
+      def _get_snapshots(self):
+          """ get all available snapshots on the disk """
+          
+          snapshots = []
+          for adir in os.listdir(self.snapshot_rootdir):
+              snap_parentdir_path = os.path.join(self.snapshot_rootdir, adir)
+              for bdir in os.listdir(snap_parentdir_path):
+                  try:
+                      before = self._snapshot_dir_to_datetime(adir, bdir)
+                      snapshots.append((adir, bdir))
+                  except ValueError:
+                      logger.error("Failed to parse time stamp: {}/{}".format(adir, bdir))
+                      continue
+          
+          return snapshots
+          
+      def trim_snapshots(self, snapshots=[]):
+          """ trim outdated snapshots with some intelligence """
+          
+          # optional argument: to make it easy for testing
+          snapshots = snapshots or self._get_snapshots()
+          
+          if snapshots:
+              logger.info("Loaded {} snapshots.".format(len(snapshots)))
+          else:
+              logger.warn("No available snapshots found.")
+              return
+          
+          ##
+          # trim snapshots in a smart way
+          # --------------------------------------------------------------------
+          ichoices = iter(snapshots)
+          snapshots_all = set(snapshots)
+          snapshots_to_keep = []
+          
+          assert len(snapshots_all) == len(snapshots)
+          
+          for c in self._bichoose(ichoices):
+              snapshots_to_keep.append(c)
+              
+          snapshots_to_delete = snapshots_all - set(snapshots_to_keep)
+          nd = len(snapshots_to_delete)
+          assert nd >= 0
 
-**** tests
-#+BEGIN_SRC python :session test :noweb eval :results output
-  <<overview>>
+          if nd == 0:
+              logger.info("Nothing to do.")
+              return
+          
+          logger.info("{} snapshots will be removed from history.".format(nd))
+          for asnap in snapshots_to_delete:
+              self.delete_snapshot(asnap)
+                  
+          return
+              
+   #+end_src
 
-  snapman = SnapshotManager("/btrfs/backup", "/tmp/scratch")
-  snapman.take_snapshot()
-  snapman.delete_snapshot("/tmp/scratch/aa")
-#+END_SRC
+    #+RESULTS: trim-snapshots
+    
+*** tests
+     - Note taken on [2015-04-21 Tue 15:45] \\
+       tests怎么加才合理?
+       
+     #+tblname: tbl-dirs
+     |      adirs | bdirs |
+     |------------+-------|
+     | 2015-04-19 | 22:00 |
+     | 2015-04-19 | 21:01 |
+     | 2015-04-18 | 20:02 |
+     | 2015-04-18 | 21:03 |
+     | 2015-04-17 | 12:04 |
+     | 2015-04-17 | 12:05 |
+     | 2015-04-17 | 12:06 |
+     | 2015-04-16 | 11:07 |
+     | 2015-04-13 | 12:08 |
+     | 2015-03-13 | 12:09 |
+     
+     #+HEADER: :var adirs=tbl-dirs[,0]
+     #+HEADER: :var bdirs=tbl-dirs[,1]
+     #+BEGIN_SRC python :noweb yes :results output :dir scripts/
+       from snapman import SnapshotManager
 
-#+RESULTS:
-#+begin_example
+       snapshots = []
+       for adir, bdir in zip(adirs, bdirs):
+           snapshots.append((adir, bdir))
 
-... ... ... ... ... ... ... ... ... ... ... ... >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>>  test info
- test info
- test info
- test info
- test info
- test info
-test debug
- test debug
- test debug
- test debug
- test debug
- test debug
->>> >>> ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... >>> ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... >>> ... ... 0
->>> >>> >>>  snapshot directory: /tmp/scratch/2015-04-21/13:35
- snapshot directory: /tmp/scratch/2015-04-21/13:35
- snapshot directory: /tmp/scratch/2015-04-21/13:35
- snapshot directory: /tmp/scratch/2015-04-21/13:35
- snapshot directory: /tmp/scratch/2015-04-21/13:35
- snapshot directory: /tmp/scratch/2015-04-21/13:35
- Called with: btrfs subvolume snapshot /btrfs/backup /tmp/scratch/2015-04-21/13:35
- Called with: btrfs subvolume snapshot /btrfs/backup /tmp/scratch/2015-04-21/13:35
- Called with: btrfs subvolume snapshot /btrfs/backup /tmp/scratch/2015-04-21/13:35
- Called with: btrfs subvolume snapshot /btrfs/backup /tmp/scratch/2015-04-21/13:35
- Called with: btrfs subvolume snapshot /btrfs/backup /tmp/scratch/2015-04-21/13:35
- Called with: btrfs subvolume snapshot /btrfs/backup /tmp/scratch/2015-04-21/13:35
-ERROR: error accessing '/btrfs/backup'
- Failed to take snapshot with btrfs!
-Traceback (most recent call last):
-  File "<stdin>", line 33, in take_snapshot
-  File "/usr/lib/python2.7/subprocess.py", line 540, in check_call
-    raise CalledProcessError(retcode, cmd)
-CalledProcessError: Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
- Failed to take snapshot with btrfs!
-Traceback (most recent call last):
-  File "<stdin>", line 33, in take_snapshot
-  File "/usr/lib/python2.7/subprocess.py", line 540, in check_call
-    raise CalledProcessError(retcode, cmd)
-CalledProcessError: Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
- Failed to take snapshot with btrfs!
-Traceback (most recent call last):
-  File "<stdin>", line 33, in take_snapshot
-  File "/usr/lib/python2.7/subprocess.py", line 540, in check_call
-    raise CalledProcessError(retcode, cmd)
-CalledProcessError: Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
- Failed to take snapshot with btrfs!
-Traceback (most recent call last):
-  File "<stdin>", line 33, in take_snapshot
-  File "/usr/lib/python2.7/subprocess.py", line 540, in check_call
-    raise CalledProcessError(retcode, cmd)
-CalledProcessError: Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
- Failed to take snapshot with btrfs!
-Traceback (most recent call last):
-  File "<stdin>", line 33, in take_snapshot
-  File "/usr/lib/python2.7/subprocess.py", line 540, in check_call
-    raise CalledProcessError(retcode, cmd)
-CalledProcessError: Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
- Failed to take snapshot with btrfs!
-Traceback (most recent call last):
-  File "<stdin>", line 33, in take_snapshot
-  File "/usr/lib/python2.7/subprocess.py", line 540, in check_call
-    raise CalledProcessError(retcode, cmd)
-CalledProcessError: Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
- Oops! We run into troubles:
->>>
- Oops! We run into troubles:
->>>
- Oops! We run into troubles:
->>>
- Oops! We run into troubles:
->>>
- Oops! We run into troubles:
->>>
- Oops! We run into troubles:
->>>
- Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
-Traceback (most recent call last):
-  File "<stdin>", line 1, in <module>
-  File "<stdin>", line 33, in take_snapshot
-  File "/usr/lib/python2.7/subprocess.py", line 540, in check_call
-    raise CalledProcessError(retcode, cmd)
-CalledProcessError: Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
- Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
-Traceback (most recent call last):
-  File "<stdin>", line 1, in <module>
-  File "<stdin>", line 33, in take_snapshot
-  File "/usr/lib/python2.7/subprocess.py", line 540, in check_call
-    raise CalledProcessError(retcode, cmd)
-CalledProcessError: Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
- Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
-Traceback (most recent call last):
-  File "<stdin>", line 1, in <module>
-  File "<stdin>", line 33, in take_snapshot
-  File "/usr/lib/python2.7/subprocess.py", line 540, in check_call
-    raise CalledProcessError(retcode, cmd)
-CalledProcessError: Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
- Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
-Traceback (most recent call last):
-  File "<stdin>", line 1, in <module>
-  File "<stdin>", line 33, in take_snapshot
-  File "/usr/lib/python2.7/subprocess.py", line 540, in check_call
-    raise CalledProcessError(retcode, cmd)
-CalledProcessError: Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
- Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
-Traceback (most recent call last):
-  File "<stdin>", line 1, in <module>
-  File "<stdin>", line 33, in take_snapshot
-  File "/usr/lib/python2.7/subprocess.py", line 540, in check_call
-    raise CalledProcessError(retcode, cmd)
-CalledProcessError: Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
- Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
-Traceback (most recent call last):
-  File "<stdin>", line 1, in <module>
-  File "<stdin>", line 33, in take_snapshot
-  File "/usr/lib/python2.7/subprocess.py", line 540, in check_call
-    raise CalledProcessError(retcode, cmd)
-CalledProcessError: Command '['btrfs', 'subvolume', 'snapshot', '/btrfs/backup', '/tmp/scratch/2015-04-21/13:35']' returned non-zero exit status 1
-snapshot directory /tmp/scratch/aa does not exists!
- snapshot directory /tmp/scratch/aa does not exists!
- snapshot directory /tmp/scratch/aa does not exists!
- snapshot directory /tmp/scratch/aa does not exists!
- snapshot directory /tmp/scratch/aa does not exists!
- snapshot directory /tmp/scratch/aa does not exists!
- Oops! We run into troubles:
->>>
- Oops! We run into troubles:
->>>
- Oops! We run into troubles:
->>>
- Oops! We run into troubles:
->>>
- Oops! We run into troubles:
->>>
- Oops! We run into troubles:
->>>
- snapshot directory /tmp/scratch/aa does not exists!
-Traceback (most recent call last):
-  File "<stdin>", line 1, in <module>
-  File "<stdin>", line 47, in delete_snapshot
-RuntimeError: snapshot directory /tmp/scratch/aa does not exists!
- snapshot directory /tmp/scratch/aa does not exists!
-Traceback (most recent call last):
-  File "<stdin>", line 1, in <module>
-  File "<stdin>", line 47, in delete_snapshot
-RuntimeError: snapshot directory /tmp/scratch/aa does not exists!
- snapshot directory /tmp/scratch/aa does not exists!
-Traceback (most recent call last):
-  File "<stdin>", line 1, in <module>
-  File "<stdin>", line 47, in delete_snapshot
-RuntimeError: snapshot directory /tmp/scratch/aa does not exists!
- snapshot directory /tmp/scratch/aa does not exists!
-Traceback (most recent call last):
-  File "<stdin>", line 1, in <module>
-  File "<stdin>", line 47, in delete_snapshot
-RuntimeError: snapshot directory /tmp/scratch/aa does not exists!
- snapshot directory /tmp/scratch/aa does not exists!
-Traceback (most recent call last):
-  File "<stdin>", line 1, in <module>
-  File "<stdin>", line 47, in delete_snapshot
-RuntimeError: snapshot directory /tmp/scratch/aa does not exists!
- snapshot directory /tmp/scratch/aa does not exists!
-Traceback (most recent call last):
-  File "<stdin>", line 1, in <module>
-  File "<stdin>", line 47, in delete_snapshot
-RuntimeError: snapshot directory /tmp/scratch/aa does not exists!
-#+end_example
+       snapman = SnapshotManager("/btrfs/backup", "/tmp/scratch")
+       #snapman.take_snapshot()
+       #snapman.delete_snapshot("/tmp/scratch/aa")
+       snapman.trim_snapshots(snapshots)
+     #+END_SRC
 
-*** main function
+     #+RESULTS:
+
+** main function
 #+NAME: main-function
-#+BEGIN_SRC python  :session test :results output
+#+BEGIN_SRC python :results output :noweb yes
+
   def main(argv=None):
       import optparse
       
@@ -1032,7 +875,7 @@ RuntimeError: snapshot directory /tmp/scratch/aa does not exists!
       
       # parsing cmdline
       cmdl_usage = 'usage: %prog [options]...'
-      cmdl_version = "%prog " + __VERSION__ + "; updated at: " + __UPDATED__
+      cmdl_version = "%prog " + <<VERSION>> + "; updated at: " + <<UPDATED>>
       cmdl_parser = optparse.OptionParser(usage=cmdl_usage, \
                                           version=cmdl_version, \
                                               conflict_handler='resolve')
@@ -1050,3 +893,11 @@ RuntimeError: snapshot directory /tmp/scratch/aa does not exists!
       main()
 
 #+END_SRC
+
+#+RESULTS: main-function
+
+* Local variables
+# Local Variables:
+# time-stamp-format: "%:y-%02m-%02d %02H:%02M"
+# time-stamp-pattern: "100/^Updated: %%$"
+# End:
