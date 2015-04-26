@@ -6,13 +6,13 @@
 
 #+name: UPDATED
 #+BEGIN_SRC rst
-Updated: 2015-04-26 20:16
+Updated: 2015-04-26 20:34
 #+END_SRC
 
 
 #+name: VERSION
 #+begin_src rst
-v0.1.0
+v0.1.1
 #+end_src
 
 * 摘要
@@ -23,8 +23,10 @@ v0.1.0
   1. [X] ifmain version, time-stamp...
   2. [X] btrfs
   3. [X] lsyncd.lua
-* [2/3] Memo
-** TODO [2015-04-18 Sat] isync-data不应该放在etc这个目录下, 可能导致无穷递归.
+* [3/3] Memo
+** DONE [2015-04-18 Sat] isync-data不应该放在etc这个目录下, 可能导致无穷递归.
+   - State "DONE"       from "TODO"       [2015-04-26 Sun 20:32] \\
+     似乎没问题的.
    放在/backup下要好很多.
 ** DONE [#B] [2013-07-23 Tue] lsyncd 2.1新版 无法使用之前写的config文件, 需要升级 :Action:
    - State "DONE"       from "TODO"       [2015-04-18 Sat 11:43]
@@ -255,10 +257,7 @@ v0.1.0
 
    #+END_SRC
 
-   #+RESULTS: basic-logger
-
    #+NAME: basic-logger-test
-   #+HEADER: :tangle log.py
    #+BEGIN_SRC python :results output :noweb yes
      <<basic-logger>>
 
@@ -337,7 +336,7 @@ v0.1.0
       <<evaluate-decay>>
 
       kbt = 30
-      p = 30
+      p = 50
       max_period = kbt*math.log(kbt*p)
       # max_snapshots = kbt*kbt*math.exp(-1.0*max_p/kbt) - kbt*(kbt - max_p)
       print("max period: {:.1f}".format(max_period))
@@ -347,9 +346,9 @@ v0.1.0
     #+END_SRC
 
     #+RESULTS:
-    : max period: 204.1
-    : snapshots in p1: 29.5
-    : 0.779769962654
+    : max period: 219.4
+    : snapshots in p1: 49.2
+    : 1.29961660442
 
     如选kbt=30, p=20, 最近的一个小时可保留约20个版本, 一天(24h)中可保
     留约330个备份, 余下的分布在约8天的序列里.
@@ -448,11 +447,19 @@ v0.1.0
     #+RESULTS: test-weighted-choose
     : b
 
-
 * lsyncd
-** install
+** 安装与配置
    1. aur: lsyncd
    2. 需要lua中的lfs包 lua51-filesystem
+   3. 设置内核变量
+      #+begin_src sh
+        sudo sysctl fs.inotify.max_user_watches=81920
+      #+end_src
+
+      #+RESULTS:
+      : fs.inotify.max_user_watches = 81920
+      
+      修改/etc/sysctl.d下的文件使设置永久生效.
 
 ** lsyncd配置文件
 *** 笔记
@@ -527,7 +534,7 @@ v0.1.0
       iman = {
           ---
           -- take snapshot when max_hits reached
-          max_hits = 5,
+          max_hits = 1,
 
           current_hits = 0,
 
@@ -983,6 +990,20 @@ v0.1.0
      #+END_SRC
 
      #+RESULTS:
+     #+begin_example
+     INFO  __init__@l150  isnapman started at 2015-04-26 20:29
+     INFO  delete_all_snapshots@l225  try to delete all snapshots in /btrfs/TimeMachine
+     INFO  delete_snapshot@l210  try to delete: /btrfs/TimeMachine/2015-04-26/20:21
+     DEBUG _delete_snapshot_by_path@l192  cmdline: sudo btrfs subvolume delete /btrfs/TimeMachine/2015-04-26/20:21
+     Delete subvolume (no-commit): '/btrfs/TimeMachine/2015-04-26/20:21'
+     INFO  delete_snapshot@l210  try to delete: /btrfs/TimeMachine/2015-04-26/20:23
+     DEBUG _delete_snapshot_by_path@l192  cmdline: sudo btrfs subvolume delete /btrfs/TimeMachine/2015-04-26/20:23
+     Delete subvolume (no-commit): '/btrfs/TimeMachine/2015-04-26/20:23'
+     INFO  delete_snapshot@l210  try to delete: /btrfs/TimeMachine/2015-04-26/20:27
+     DEBUG _delete_snapshot_by_path@l192  cmdline: sudo btrfs subvolume delete /btrfs/TimeMachine/2015-04-26/20:27
+     Delete subvolume (no-commit): '/btrfs/TimeMachine/2015-04-26/20:27'
+     INFO  delete_snapshot@l217  removed empty directory /btrfs/TimeMachine/2015-04-26.
+#+end_example
 
      #+tblname: tbl-dirs
      |      adirs | bdirs |
@@ -995,14 +1016,13 @@ v0.1.0
      | 2015-03-11 | 12:03 |
      | 2015-03-10 | 12:02 |
 
-
 ** main function
    #+NAME: main
    #+BEGIN_SRC python :results output :noweb yes
      def take_snapshot_dwim():
          snapman = SnapshotManager("/btrfs/backup", "/btrfs/TimeMachine")
          snapman.decay_kbt = 30
-         snapman.decay_pfactor = 60
+         snapman.decay_pfactor = 30
          snapman.take_snapshot()
          snapman.trim_snapshots()
 
