@@ -6,14 +6,23 @@
 
 #+name: UPDATED
 #+BEGIN_SRC rst
-Updated: 2015-04-22 14:57
+Updated: 2015-04-26 20:16
 #+END_SRC
+
+
+#+name: VERSION
+#+begin_src rst
+v0.1.0
+#+end_src
 
 * 摘要
   * 将isync-data下的数据 *实时* 同步至isync-backup下
   * 在isync-snapshots下做快照, 保存版本信息
   * 按指数衰减算法清理isync-snapshots下的快照
-
+* [3/3] Checklist
+  1. [X] ifmain version, time-stamp...
+  2. [X] btrfs
+  3. [X] lsyncd.lua
 * [2/3] Memo
 ** TODO [2015-04-18 Sat] isync-data不应该放在etc这个目录下, 可能导致无穷递归.
    放在/backup下要好很多.
@@ -55,13 +64,41 @@ Updated: 2015-04-22 14:57
        : /btrfs/TimeMachine/2011-09-04/22:13
      - 快照清理
        - 需要自动清理旧的备份(指数衰减)
-* BTRFS
-  1. BTRFS 做增量备份: [[https://btrfs.wiki.kernel.org/index.php/Incremental_Backup][incremental backup]]
-     "-o" 做只读版本
+* BTRFS 参见[[file:~/Notes/cmdline.note::*BTRFS][cmdline:btrfs]]
+** 技术要点
+   1. BTRFS 做增量备份: [[https://btrfs.wiki.kernel.org/index.php/Incremental_Backup][incremental backup]]
+      "-o" 做只读版本
+   2. 启用lzo压缩, 节省空间.
+** 操作步骤
+   1. 格式化btrfs分区. 这里用lvcreate 生成名为/dev/store/btrfs 的虚拟卷
+   2. 将虚拟卷格式化为btrfs
+      : mkfs.btrfs /dev/store/btrfs
+   3. 修改/etc/fstab
+      : /dev/store/btrfs  /btrfs  btrfs   defaults,compress=lzo           0       2
+   4. 创建/btrfs/backup子卷, 方便快照操作.
+      : btrfs subvolume create /btrfs/backup
+   5. 创建/btrfs/TimeMachine目录, 用于存放快照
+      : mkdir /btrfs/TimeMachine
+   6. 创造只读快照
+      #+name: btrfs-take-snapshot
+      #+begin_src sh
+        mkdir -p /btrfs/TimeMachine/2015-04-22
+        btrfs subvolume snapshot -r /btrfs/backup /btrfs/TimeMachine/2015-04-22/15:54
+      #+end_src
 
-* install
-  1. aur: lsyncd
-  2. 需要lua中的lfs包 lua51-filesystem
+      #+RESULTS: btrfs-take-snapshot
+      : Create a readonly snapshot of '/btrfs/backup' in '/btrfs/TimeMachine/2015-04-22/15:54'
+
+   7. 删除快照(需要root权限):
+      #+name: btrfs-delete-snapshot
+      #+begin_src sh
+        sudo btrfs subvolume delete /btrfs/TimeMachine/2015-04-22/15:54
+        rmdir /btrfs/TimeMachine/2015-04-22
+      #+end_src
+
+      #+RESULTS: btrfs-delete-snapshot
+      : Delete subvolume (no-commit): '/btrfs/TimeMachine/2015-04-22/15:54'
+
 * logging
 ** 相关资料: [[http://victorlin.me/posts/2012/08/26/good-logging-practice-in-python][Good logging practice in Python]]
 ** guts中的设置(很多问题)
@@ -102,7 +139,7 @@ Updated: 2015-04-22 14:57
          """ if name is empty, you get the root logger
          @root: root logger of not
          """
-         
+
          Themes = {"clean":LogThemeClean,
                    "clean2": LogThemeClean2,
                    "simple":LogThemeSimple,
@@ -121,9 +158,9 @@ Updated: 2015-04-22 14:57
              logger = logging.getLogger(name)
          else:
              logger = logging.getLogger()
-             
+
          logger.setLevel(logging.DEBUG)
-         
+
          # keep console screen clean
          console_hdlr = ConsoleHandler()
          if verbose:
@@ -154,7 +191,7 @@ Updated: 2015-04-22 14:57
              logger.error("Oops! We run into troubles:\n>>>")
              logger.error(exc_value, exc_info=(exc_type, exc_value, traceback))
          sys.excepthook = log_exception
-      
+
          return logger
 
      logger = setup_logger("test")
@@ -192,7 +229,7 @@ Updated: 2015-04-22 14:57
          format: '%(levelname)-05s %(funcName)s@l%(lineno)-4d %(message)s'
          datefmt: '%d/%m/%Y %H:%M:%S'
    #+end_src
-   
+
 ** basic-logger
    #+NAME: basic-logger
    #+HEADER: :noweb yes
@@ -202,20 +239,20 @@ Updated: 2015-04-22 14:57
          import logging.config
          import StringIO
          import yaml
-         
+
          yaml_conf = """
      <<yaml-conf>>
      """
-         
+
          config = yaml.load(StringIO.StringIO(yaml_conf))
          logging.config.dictConfig(config)
-         
+
          logger = logging.getLogger(name or __name__)
          level = logging.DEBUG if debug else logging.INFO
          logger.setLevel(level)
-         
+
          return logger
-         
+
    #+END_SRC
 
    #+RESULTS: basic-logger
@@ -249,6 +286,24 @@ Updated: 2015-04-22 14:57
 ** 指数衰减.
    随着时间的增加, 备份保留的意义递减. 这被称为牛顿冷却定律, 其实与玻
    尔兹曼分布一回事.
+*** 函数形式
+
+    \( f(e)=p\cdot\exp(-\frac{e}{k_{b}T}) \), 其中e是变量
+
+   积分后: \( -k_{b}T\cdot f(e) \)
+
+   #+name: r-decay-plot
+   #+begin_src R :results output graphics :file images/decay.png
+     curve(exp(-1*x), ylim=c(-0.2,1), xlim=c(0, 10), col="blue")
+     curve(exp(-2*x), add=T, ylim=c(-0.2, 1), xlim=c(0, 10), col="black")
+     curve((10-x)/10*exp(-1*x), add=T, ylim=c(-0.2, 1), xlim=c(0, 10), col="red")
+
+   #+end_src
+
+   #+RESULTS: r-decay-plot
+   [[file:images/decay.png]]
+
+
 *** evaluate-decay
     #+NAME: evaluate-decay
     #+BEGIN_SRC python :results output :session test :cache no
@@ -256,41 +311,48 @@ Updated: 2015-04-22 14:57
 
       def evaluate_decay_score(elapsed, kbt=600*0.083145):
           """ use Boltzmann distribution instead """
-          
+
           assert elapsed >= 0 and kbt > 0
-          
-          score = math.exp(-1*elapsed / kbt)
+
+          score = math.exp(-1.0*elapsed / kbt)
           return score
 
-      def evaluate_decay_area(point_from, point_to, kbt=600*0.083145):
+      def evaluate_decay_area(point_from, point_to, kbt=600*0.083145, max_p=400):
           """ the Boltzmann distribution area (integration) """
-          
+
           if point_from > point_to:
               point_from, point_to = point_to, point_from
-          
-          s1 = math.exp(-1*point_from / kbt)
-          s2 = math.exp(-1*point_to / kbt)
-          return (s1 - s2)*kbt
+
+          pfactor1 = 1 or (point_from - max_p + kbt)
+          pfactor2 = 1 or (point_to - max_p + kbt)
+          s1 = pfactor1*math.exp(-1.0*point_from / kbt)
+          s2 = pfactor2*math.exp(-1.0*point_to / kbt)
+          return -1*(s2 - s1)*kbt
     #+END_SRC
+
+    #+RESULTS: evaluate-decay
 
     测试下看:
     #+BEGIN_SRC python :results output :cache no :noweb eval
       <<evaluate-decay>>
 
-      print(evaluate_decay_score(0, 300))
-      print(evaluate_decay_score(20, 30))
-      print(evaluate_decay_area(0, 24, 80))
-      print(evaluate_decay_area(0, 500, 80))
+      kbt = 30
+      p = 30
+      max_period = kbt*math.log(kbt*p)
+      # max_snapshots = kbt*kbt*math.exp(-1.0*max_p/kbt) - kbt*(kbt - max_p)
+      print("max period: {:.1f}".format(max_period))
+      snapshots_in_period1 = kbt*p*(1 - math.exp(-1.0/kbt))
+      print("snapshots in p1: {:.1f}".format(snapshots_in_period1))
+      print(evaluate_decay_area(109, 110, kbt)*p)
     #+END_SRC
 
     #+RESULTS:
-    : 1.0
-    : 0.367879441171
-    : 50.5696447063
-    : 79.9270494428
+    : max period: 204.1
+    : snapshots in p1: 29.5
+    : 0.779769962654
 
-    如选kbt=80, 一天(24h)中可保留约51个备份, 约下的分布在约三周的时间
-    (500h)长度的序列里.
+    如选kbt=30, p=20, 最近的一个小时可保留约20个版本, 一天(24h)中可保
+    留约330个备份, 余下的分布在约8天的序列里.
 
 ** 备份清理
    1. 各个备份, 按时间序, 组成一列.
@@ -305,7 +367,7 @@ Updated: 2015-04-22 14:57
       建一个稀疏些的备份序列.
       : dir1, dir4, dir9, ...
    5. 清除非保留队列里的备份. 任务完成.
-*** tests    
+*** tests
     #+BEGIN_SRC python :noweb eval
       <<imports>>
 
@@ -316,16 +378,14 @@ Updated: 2015-04-22 14:57
           #print("{}/{}: {:.2f}".format(adir, bdir, score))
           choices.append((adir, bdir))
           weights.append(score)
-                  
+
       ichoices = iter(choices)
       for c in bichoose(ichoices):
           print(c)
-          
+
     #+END_SRC
 
 ** 权重选择
-   备份过程暂时用不上.
-
 *** 基于权重选择单一项(赌轮盘算法)
 
     #+NAME: weighted-choose-one
@@ -344,24 +404,26 @@ Updated: 2015-04-22 14:57
 
       def weighted_choose_one(choices, weights):
           """ select single one based on their weights """
-          
+
           assert len(choices) == len(weights)
           cumdist = list(accumulate(weights))
           x = random.random() * cumdist[-1]
           return bisect.bisect(cumdist, x)
 
     #+END_SRC
-    
+
     #+RESULTS: weighted-choose-one
 
 *** 基于权重选择多个项
    #+NAME: weighted-choose
-   #+BEGIN_SRC python :session test :results output
+   #+BEGIN_SRC python :session test :results output :noweb yes
+     <<weighted-choose-one>>
+
      def weighted_choose(choices, weights, ncount):
          """ choose n-choices one time according their weights """
-         
+
          assert len(choices) > ncount
-         
+
          chosen = []
          for it in range(ncount):
              idx = weighted_choose_one(choices, weights)
@@ -371,56 +433,59 @@ Updated: 2015-04-22 14:57
          return sorted(chosen)
 
    #+END_SRC
-   
+
    #+RESULTS: weighted-choose
 
+*** 测试
+    #+name: test-weighted-choose
+    #+begin_src python :noweb eval :results output
+      <<weighted-choose>>
+
+      for c in weighted_choose(["a", "b"], [8.1, 9.9], 1):
+          print(c)
+    #+end_src
+
+    #+RESULTS: test-weighted-choose
+    : b
+
+
 * lsyncd
-** 启动lsyncd
-#+BEGIN_SRC sh :tangle scripts/start-lsyncd.sh :shebang #! /usr/bin/env bash :results none
-  # get real script path
-  script_path="$0"
-  [[ -h "$script_path" ]] && script_path=$(readlink "$script_path")
-
-  script_root=$(cd $(dirname "$script_path"); pwd)
-  echo "script root is: \"$script_root\""
-  cd "$script_root"
-
-  while true; do
-      lsyncd -nodaemon -delay 30 -log all lsyncd.lua
-      # sleep 5
-      exit 0
-  done
-#+END_SRC
+** install
+   1. aur: lsyncd
+   2. 需要lua中的lfs包 lua51-filesystem
 
 ** lsyncd配置文件
 *** 笔记
    需要安装: lua-filesystem
 
    见源代码中default.lua, default.checkgauge
-#+BEGIN_EXAMPLE
---
--- used to ensure there aren't typos in the keys
---
-default.checkgauge = {
-	action        =  true,
-	checkgauge    =  true,
-	collect       =  true,
-	delay         =  true,
-	exitcodes     =  true,
-	init          =  true,
-	maxDelays     =  true,
-	maxProcesses  =  true,
-	onAttrib      =  true,
-	onCreate      =  true,
-	onModify      =  true,
-	onDelete      =  true,
-	onStartup     =  true,
-	onMove        =  true,
-	prepare       =  true,
-	source        =  true,
-	target        =  true,
-}
-#+END_EXAMPLE
+   #+name: lua-example
+   #+begin_src lua
+     --
+     -- used to ensure there aren't typos in the keys
+     --
+     default.checkgauge = {
+         action        =  true,
+         checkgauge    =  true,
+         collect       =  true,
+         delay         =  true,
+         exitcodes     =  true,
+         init          =  true,
+         maxDelays     =  true,
+         maxProcesses  =  true,
+         onAttrib      =  true,
+         onCreate      =  true,
+         onModify      =  true,
+         onDelete      =  true,
+         onStartup     =  true,
+         onMove        =  true,
+         prepare       =  true,
+         source        =  true,
+         target        =  true,
+     }
+
+   #+end_src
+
    1. sync函数是主要的入口
    2. 几个重要的子函数
       1. init
@@ -436,118 +501,132 @@ default.checkgauge = {
       6. OnMove
    4. default.action ==> onMove, onDelete ...
 *** src
-#+BEGIN_SRC lua :tangle scripts/isync.lua
------
--- My configuration file for lsyncd.
--- This needs lsyncd 2.1
---
---
+    #+BEGIN_SRC lua :tangle lsyncd.lua
+      -----
+      -- My configuration file for lsyncd 2.1
+      --
 
-require("lfs")
+      require("lfs")
 
-local source_rootdir = lfs.currentdir() .. "/scratch"
-local backup_rootdir = "/btrfs/backup"
-local snapshot_rootdir = "/btrfs/TimeMachine"
+      local source_rootdir = lfs.currentdir() .. "/isync-data"
+      local backup_rootdir = "/btrfs/backup"
+      local snapshot_rootdir = "/btrfs/TimeMachine"
 
 
-settings {
-    logfile    = "/tmp/lsyncd.log",
-    statusFile = "/tmp/lsyncd.status",
-	statusInterval = 1,
-    nodaemon   = true,
-    maxDelays = 15,
-}
+      settings {
+          logfile    = "/tmp/lsyncd.log",
+          statusFile = "/tmp/lsyncd.status",
+          statusInterval = 1,
+          nodaemon   = true,
+          maxDelays = 15,
+      }
 
----
--- record file change events and make btrfs snapshots accordingly
---
-iman = {
-    ---
-    -- take snapshot when max_hits reached
-    max_hits = 3,
+      ---
+      -- record file change events and make btrfs snapshots accordingly
+      --
+      iman = {
+          ---
+          -- take snapshot when max_hits reached
+          max_hits = 5,
 
-    current_hits = 0,
+          current_hits = 0,
 
-    ---
-    -- make btrfs snapshots
-    --
-    take_snapshot = function(event)
-        log("Normal", "taking snapshot...")
-        log("Normal", "./take-snapshot.py " .. backup_rootdir .. " " .. snapshot_rootdir)
-        os.execute("./take-snapshot.py " .. backup_rootdir .. " " .. snapshot_rootdir)
-     end,
+          ---
+          -- make btrfs snapshots
+          --
+          take_snapshot = function(event)
+             log("Normal", "taking snapshot...")
+             os.execute("scripts/snapman.py")
+          end,
+          
+          ---
+          -- record hits
+          --
+          hit = function(event)
+              iman.current_hits = iman.current_hits + 1
+              log("Normal", "hitted as " .. iman.current_hits)
+              ---
+              -- reset hits
+              --
+              if iman.current_hits >= iman.max_hits then
+                  iman.current_hits = 0
+                  iman.take_snapshot(event)
+              end
+          end
+      }
 
-    ---
-    -- record hits
-    --
-    hit = function(event)
-        iman.current_hits = iman.current_hits + 1
-        log("Normal", "hitted as " .. iman.current_hits)
-        ---
-        -- reset hits
-        --
-        if iman.current_hits >= iman.max_hits then
-            iman.current_hits = 0
-            iman.take_snapshot(event)
-        end
-    end
-}
+      local isync = default.rsync
 
-local isync = default.rsync
+      isync.checkgauge.onMove = true
 
-isync.checkgauge.onMove = true
+      -- called when a process exited.
+      -- this can be a rsync command, the startup rsync or the postcmd
+      isync.collect = function(agent, exitcode)
+          log("Normal", "collecting here")
+          if not agent.isList and agent.etype == 'Init' then
+              log("Normal", "init procedure")
+          else
+              log("Normal", "iman hit")
+              iman.hit(agent)
+          end
+          --- everything else, forward to default collection handler
+          return default.collect(agent,exitcode)
+      end
 
--- called when a process exited.
--- this can be a rsync command, the startup rsync or the postcmd
-isync.collect = function(agent, exitcode)
-    log("Normal", "collecting here")
-	if not agent.isList and agent.etype == 'Init' then
-        log("Normal", "init procedure")
-    else
-        log("Normal", "iman hit")
-        iman.hit(agent)
-    end
-    --- everything else, forward to default collection handler
-    return default.collect(agent,exitcode)
-end
+      for afile in lfs.dir(source_rootdir) do
+          if afile ~= '.' and afile ~= '..' then
+              local path = source_rootdir .. "/" .. afile
+              local attr = lfs.attributes(path, "mode")
+              if attr == "directory" then
+                  source_dir = path
+                  target_dir = backup_rootdir .. "/" .. afile
+                  -- log("Normal", source_dir .. " ==> " .. target_dir )
+                  sync{isync, source=source_dir, target=target_dir, excludeFrom = "rsync.exclude"}
+              end
+          end
+      end
 
+    #+END_SRC
+** 启动lsyncd
+#+BEGIN_SRC sh :tangle start-lsyncd.sh :shebang #! /usr/bin/env bash :results none
+  # get real script path
+  script_path="$0"
+  [[ -h "$script_path" ]] && script_path=$(readlink "$script_path")
 
-for afile in lfs.dir(source_rootdir) do
-    if afile ~= '.' and afile ~= '..' then
-        local path = source_rootdir .. "/" .. afile
-        local attr = lfs.attributes(path, "mode")
-        if attr == "directory" then
-            source_dir = path
-            target_dir = backup_rootdir .. "/" .. afile
-            -- log("Normal", source_dir .. " ==> " .. target_dir )
-            sync{isync, source=source_dir, target=target_dir, excludeFrom = "isync.exclude"}
-        end
-    end
-end
+  script_root=$(cd $(dirname "$script_path"); pwd)
+  echo "script root is: \"$script_root\""
+  cd "$script_root"
 
+  while true; do
+      lsyncd -nodaemon -delay 30 lsyncd.lua
+      # sleep 5
+      exit 0
+  done
 #+END_SRC
+
 * snapman.py [[elisp:(org-babel-tangle)][tangle]]
 ** outline
-#+NAME: overview
-#+HEADER: :session test
-#+HEADER: :shebang #! /usr/bin/env python2
-#+HEADER: :results output
-#+BEGIN_SRC python :noweb yes :tangle scripts/snapman.py
-  <<header>>
+   #+NAME: overview
+   #+HEADER: :session test
+   #+HEADER: :shebang #! /usr/bin/env python2
+   #+HEADER: :results output
+   #+BEGIN_SRC python :noweb yes :tangle scripts/snapman.py
+     <<header>>
 
-  <<imports>>
+     <<imports>>
 
-  <<setup-logger>>
+     <<setup-logger>>
 
-  <<evaluate-decay>>
+     <<evaluate-decay>>
 
-  <<snapshot-manager>>
+     <<weighted-choose>>
 
-#+END_SRC
+     <<snapshot-manager>>
 
-#+RESULTS:
-: 
-: ... ... ... ... ... ... ... ... ... ... ... ... >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> >>> ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... >>> ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... >>> ... ... 0
+     <<main>>
+
+   #+END_SRC
+
 ** imports
 #+NAME: imports
 #+BEGIN_SRC python :session test
@@ -573,15 +652,15 @@ end
   # -*- coding: utf-8 -*-
   #====================================================================#
   #   DESCRIPTION:  btrfs snapshot dwim
-  # 
+  #
   #       OPTIONS:  ---
   #  REQUIREMENTS:  ---
   #         NOTES:  ---
-  #        AUTHOR:  Wenping Guo (ybyygu) 
+  #        AUTHOR:  Wenping Guo (ybyygu)
   #         EMAIL:  winpng@gmail.com
   #       LICENCE:  GPL version 2 or upper
   #       CREATED:  2015-04-20 17:51
-  #       UPDATED: 
+  #       UPDATED:
   #====================================================================#
 
 #+END_SRC
@@ -605,7 +684,7 @@ end
       class SnapshotManager {
       + take_snapshot
       + delete_snapshot
-      + trim_snapshots 
+      + trim_snapshots
       }
 
       take_snapshot : dir_to_snapshot
@@ -620,7 +699,7 @@ end
 
     #+RESULTS:
     [[file:test.png]]
-    
+
 *** outline
 #+NAME: snapshot-manager
 #+BEGIN_SRC python :results output :session test :noweb yes
@@ -629,19 +708,18 @@ end
   # --------------------------------------------------------------------
 
   class SnapshotManager(object):
-      def __init__(self, target_subvolume, snapshot_rootdir, max_snapshots_per_day=20, max_snapshot_hits=4, max_snapshots_total=80):
+      def __init__(self, target_subvolume, snapshot_rootdir):
           self.target_subvolume = target_subvolume
           self.snapshot_rootdir = snapshot_rootdir
-          self.max_snapshots_per_day = max_snapshots_per_day
-          
-          self._snapshot_hits = 0
-          self.max_snapshot_hits = max_snapshot_hits
-          self.max_snapshots_total = max_snapshots_total
-          
+          self.decay_kbt = 30
+          self.decay_pfactor = 20
+
+          logger.info("isnapman started at {}".format(time.strftime("%Y-%m-%d %H:%M")))
+
       <<take-snapshot>>
-      
+
       <<delete-snapshot>>
-      
+
       <<trim-snapshots>>
 #+END_SRC
 
@@ -656,9 +734,9 @@ end
     #+BEGIN_SRC python :results none
       def take_snapshot(self):
           """ take one single btrfs snapshot """
-          
+
           snapshot_parent_dir = os.path.join(self.snapshot_rootdir, time.strftime("%Y-%m-%d"))
-          
+
           if not os.path.exists(snapshot_parent_dir):
               os.makedirs(snapshot_parent_dir)
               logger.info("Created snapshot directory: {}".format(snapshot_parent_dir))
@@ -669,11 +747,11 @@ end
           dirname = "{}:{:02}".format(time.strftime("%H"), int(time.strftime("%M")))
           snap_name = os.path.join(snapshot_parent_dir, dirname)
           logger.debug("snapshot directory: {}".format(snap_name))
-          
+
           if not os.path.isdir(snap_name):
               args = "btrfs subvolume snapshot".split()
               args.append(self.target_subvolume)
-              args.append(snap_name)        
+              args.append(snap_name)
               logger.info("Called with: {}".format(" ".join(args)))
               try:
                   subprocess.check_call(args)
@@ -690,22 +768,21 @@ end
     #+BEGIN_SRC python :results none
       def _delete_snapshot_by_path(self, snapshot_path):
           """ delete one single snapshot specified by snapshot_path """
-          
+
           if not os.path.exists(snapshot_path):
               msg ="snapshot directory {} does not exists!".format(snapshot_path)
               logger.error(msg)
               raise RuntimeError(msg)
 
-          args = "btrfs subvolume delete".split()
+          args = "sudo btrfs subvolume delete".split()
           args.append(snapshot_path)
           logger.debug("cmdline: {}".format(" ".join(args)))
           try:
               subprocess.check_call(args)
-              logger.info("snapshot removed.")
           except subprocess.CalledProcessError:
               logger.exception("Failed to delete btrfs snapshot!")
               raise
-          
+
       def delete_snapshot(self, snapshot):
           """ delete one single snapshot """
 
@@ -715,11 +792,27 @@ end
 
           assert len(snapshot) == 2
           day_dir, time_dir = snapshot
-          
-          snapshot_path = os.path.join(day_dir, time_dir)
-          logger.info("try to delete: {}/{}".format(day_dir, time_dir))
+
+          snapshot_path = os.path.join(self.snapshot_rootdir, day_dir, time_dir)
+          logger.info("try to delete: {}".format(snapshot_path))
           self._delete_snapshot_by_path(snapshot_path)
-          
+
+          # remove empty directory by a day
+          adir = os.path.join(self.snapshot_rootdir, day_dir)
+          if not os.listdir(adir):
+              os.rmdir(adir)
+              logger.info("removed empty directory {}.".format(adir))
+
+      def delete_all_snapshots(self):
+          snapshots = self._get_snapshots()
+          if len(snapshots) == 0:
+              logger.info("No snapshots found in {}".format(self.snapshot_rootdir))
+              return
+
+          logger.info("try to delete all snapshots in {}".format(self.snapshot_rootdir))
+          for s in snapshots:
+              self.delete_snapshot(s)
+
     #+END_SRC
 
 *** trim-snapshots
@@ -728,52 +821,30 @@ end
       def _snapshot_dir_to_datetime(self, day_dir, time_dir):
           return datetime.datetime.strptime("{}/{}".format(day_dir, time_dir), "%Y-%m-%d/%H:%M")
 
-      def _calc_snapshot_score(self, day_dir, time_dir):
-          now = datetime.datetime.now()
-          delta = now - self._snapshot_dir_to_datetime(day_dir, time_dir)
-          hours = delta.total_seconds() / 3600
-          logger.debug(hours)
-          return evaluate_decay_score(hours, self.max_snapshots_total)
-
       def _calc_allowed_snapshots(self, choices):
           """ calculate how many snapshots allowed to keep """
-          
+
           assert len(choices) >= 2
           first, last = choices[0], choices[-1]
-          
-          now = datetime.datetime.now()
-          d1 = (now - self._snapshot_dir_to_datetime(*last)).total_seconds() / 3600
-          d2 = (now - self._snapshot_dir_to_datetime(*first)).total_seconds() / 3600
-          return evaluate_decay_area(d1, d2, self.max_snapshots_total)
 
-      def _bichoose(self, ichoices, current=None):
-          if current is None:
-              choice1 = next(ichoices)
-          else:
-              choice1 = current
-              
-          finished = False
-          for choice2 in ichoices:
-              allowed = self._calc_allowed_snapshots([choice1, choice2])
-              logger.debug("{} {} {:.1f}".format(choice1[-1], choice2[-1], allowed))
-              if allowed >= 1:
-                  score1 = self._calc_snapshot_score(*choice1)
-                  score2 = self._calc_snapshot_score(*choice2)
-                  #idx = weighted_choose_one([choice1, choice2], [score1, score2])
-                  #yield choice1 if idx == 0 else choice2
-                  yield choice1
-                  break
-          else:
-              finished = True
-              yield choice1
-              
-          if not finished:
-              for c in self._bichoose(ichoices, current=choice2):
-                  yield c
+          now = datetime.datetime.now()
+          d1 = (now - self._snapshot_dir_to_datetime(*first)).total_seconds() / 3600
+          d2 = (now - self._snapshot_dir_to_datetime(*last)).total_seconds() / 3600
+          logger.debug("{:.1f} {:.1f}".format(d1, d2))
+
+          return evaluate_decay_area(d1, d2, self.decay_kbt)*self.decay_pfactor
+
+      def _calc_snapshot_score(self, snapshot):
+          """ calculate the decay score based on its time-stamp """
+
+          now = datetime.datetime.now()
+          d1 = (now - self._snapshot_dir_to_datetime(*snapshot)).total_seconds() / 3600
+
+          return evaluate_decay_score(d1, self.decay_kbt)
 
       def _get_snapshots(self):
           """ get all available snapshots on the disk """
-          
+
           snapshots = []
           for adir in os.listdir(self.snapshot_rootdir):
               snap_parentdir_path = os.path.join(self.snapshot_rootdir, adir)
@@ -784,117 +855,185 @@ end
                   except ValueError:
                       logger.error("Failed to parse time stamp: {}/{}".format(adir, bdir))
                       continue
-          
+
           return snapshots
-          
-      def trim_snapshots(self, snapshots=[]):
+
+      def _cluster(self, ichoices, cluster=[]):
+
+          # construct current choice and the cluster
+          if cluster:
+              choice1 = cluster[-1]
+          else:
+              choice1 = next(ichoices)
+              cluster.append(choice1)
+
+          choice2 = None
+          for choice2 in ichoices:
+              allowed = self._calc_allowed_snapshots([choice1, choice2])
+              logger.debug("{} {} {:.1f}".format(choice1[-1], choice2[-1], allowed))
+              if allowed >= 1:
+                  #logger.debug("here1")
+                  yield cluster
+                  break
+              cluster.append(choice2)
+          else:
+              #logger.debug("here2")
+              if choice2:
+                  yield cluster
+
+          if choice2:
+              #logger.debug("here3")
+              for c in self._cluster(ichoices, cluster=[choice2]):
+                  yield c
+          else:
+              logger.debug("clustering finished.")
+
+      def _trim_snapshots_in_cluster(self, cluster, debug=False):
+          """ a group of snapshots which are close in time range """
+
+          n_snapshots = len(cluster)
+
+          assert n_snapshots > 1
+
+          choice1, choice2 = cluster[0], cluster[-1]
+          n_allowed = self._calc_allowed_snapshots([choice1, choice2])
+
+          n_to_delete = int(n_snapshots - n_allowed)
+
+          if n_to_delete > 0:
+              logger.info("will remove {} snapshots".format(n_to_delete))
+              choices = cluster
+              weights = []
+              for c in choices:
+                  score = self._calc_snapshot_score(c)
+                  weights.append(score)
+
+              # reverse the weights
+              m = max(weights)
+              for i, w in enumerate(weights):
+                  weights[i] = m - w
+
+              for adir, bdir in weighted_choose(choices, weights, n_to_delete):
+                  if not debug:
+                      self.delete_snapshot((adir, bdir))
+                  else:
+                      logger.debug("will remove {}/{}".format(adir, bdir))
+          else:
+              logger.error("not possible to trim this cluser. {:.0f} > {:.0f}".format(n_snapshots, n_allowed))
+              logger.error("{}".format(cluster))
+
+      def trim_snapshots(self, snapshots=[], debug=False):
           """ trim outdated snapshots with some intelligence """
-          
+
           # optional argument: to make it easy for testing
           snapshots = snapshots or self._get_snapshots()
-          
-          if snapshots:
-              logger.info("Loaded {} snapshots.".format(len(snapshots)))
-          else:
-              logger.warn("No available snapshots found.")
+          snapshots.sort(reverse=True)
+
+          if len(snapshots) <= 3:
+              logger.info("no enough snapshots to act on.")
               return
-          
+
+          logger.info("Loaded {} snapshots.".format(len(snapshots)))
+
           ##
           # trim snapshots in a smart way
           # --------------------------------------------------------------------
           ichoices = iter(snapshots)
           snapshots_all = set(snapshots)
-          snapshots_to_keep = []
-          
-          assert len(snapshots_all) == len(snapshots)
-          
-          for c in self._bichoose(ichoices):
-              snapshots_to_keep.append(c)
-              
-          snapshots_to_delete = snapshots_all - set(snapshots_to_keep)
-          nd = len(snapshots_to_delete)
-          assert nd >= 0
+          snapshots_to_keep = set([snapshots[-1]])
 
-          if nd == 0:
-              logger.info("Nothing to do.")
-              return
-          
-          logger.info("{} snapshots will be removed from history.".format(nd))
-          for asnap in snapshots_to_delete:
-              self.delete_snapshot(asnap)
-                  
-          return
-              
+          assert len(snapshots_all) == len(snapshots)
+
+          for c in self._cluster(ichoices):
+              for adir, bdir in c:
+                  logger.debug("\t<{}/{}>".format(adir, bdir))
+              if len(c) > 1:
+                  self._trim_snapshots_in_cluster(c, debug)
+
+          return 0
+
    #+end_src
 
     #+RESULTS: trim-snapshots
-    
+
 *** tests
      - Note taken on [2015-04-21 Tue 15:45] \\
        tests怎么加才合理?
-       
-     #+tblname: tbl-dirs
-     |      adirs | bdirs |
-     |------------+-------|
-     | 2015-04-19 | 22:00 |
-     | 2015-04-19 | 21:01 |
-     | 2015-04-18 | 20:02 |
-     | 2015-04-18 | 21:03 |
-     | 2015-04-17 | 12:04 |
-     | 2015-04-17 | 12:05 |
-     | 2015-04-17 | 12:06 |
-     | 2015-04-16 | 11:07 |
-     | 2015-04-13 | 12:08 |
-     | 2015-03-13 | 12:09 |
-     
+
      #+HEADER: :var adirs=tbl-dirs[,0]
      #+HEADER: :var bdirs=tbl-dirs[,1]
      #+BEGIN_SRC python :noweb yes :results output :dir scripts/
        from snapman import SnapshotManager
+       <<evaluate-decay>>
 
        snapshots = []
        for adir, bdir in zip(adirs, bdirs):
            snapshots.append((adir, bdir))
 
-       snapman = SnapshotManager("/btrfs/backup", "/tmp/scratch")
+       snapman = SnapshotManager("/btrfs/backup", "/btrfs/TimeMachine")
+       snapman.decay_kbt = 30
+       snapman.decay_pfactor = 60
        #snapman.take_snapshot()
-       #snapman.delete_snapshot("/tmp/scratch/aa")
-       snapman.trim_snapshots(snapshots)
+       #snapman.delete_snapshot(("2015-04-22", "16:09"))
+       snapman.delete_all_snapshots()
+       #snapman.trim_snapshots(snapshots)
+       #print(evaluate_decay_area(118, 129, 30)*30)
+       #snapman.trim_snapshots(snapshots, debug=True)
+       #snapman.trim_snapshots(debug=False)
      #+END_SRC
 
      #+RESULTS:
 
+     #+tblname: tbl-dirs
+     |      adirs | bdirs |
+     |------------+-------|
+     | 2015-04-26 | 18:38 |
+     | 2015-04-26 | 18:37 |
+     | 2015-04-26 | 18:36 |
+     | 2015-04-25 | 20:05 |
+     | 2015-03-13 | 12:04 |
+     | 2015-03-11 | 12:03 |
+     | 2015-03-10 | 12:02 |
+
+
 ** main function
-#+NAME: main-function
-#+BEGIN_SRC python :results output :noweb yes
+   #+NAME: main
+   #+BEGIN_SRC python :results output :noweb yes
+     def take_snapshot_dwim():
+         snapman = SnapshotManager("/btrfs/backup", "/btrfs/TimeMachine")
+         snapman.decay_kbt = 30
+         snapman.decay_pfactor = 60
+         snapman.take_snapshot()
+         snapman.trim_snapshots()
 
-  def main(argv=None):
-      import optparse
-      
-      if argv == None: argv = sys.argv
-      
-      # parsing cmdline
-      cmdl_usage = 'usage: %prog [options]...'
-      cmdl_version = "%prog " + <<VERSION>> + "; updated at: " + <<UPDATED>>
-      cmdl_parser = optparse.OptionParser(usage=cmdl_usage, \
-                                          version=cmdl_version, \
-                                              conflict_handler='resolve')
-      cmdl_parser.add_option('-h', '--help', 
-                              action='help',
-                              help='print this help text and exit')
-      cmdl_parser.add_option('-v', '--version', 
-                              action='version', 
-                              help='print program version and exit')
-      (cmdl_opts, cmdl_args) = cmdl_parser.parse_args()
-      
-      return 0
+     def main(argv=None):
+         import optparse
 
-  if __name__ == '__main__':
-      main()
+         if argv == None: argv = sys.argv
 
-#+END_SRC
+         # parsing cmdline
+         cmdl_usage = 'usage: %prog [options]...'
+         cmdl_version = "%prog <<VERSION>>;" + " <<UPDATED>>"
+         cmdl_parser = optparse.OptionParser(usage=cmdl_usage, \
+                                             version=cmdl_version, \
+                                                 conflict_handler='resolve')
+         cmdl_parser.add_option('-h', '--help',
+                                 action='help',
+                                 help='print this help text and exit')
+         cmdl_parser.add_option('-v', '--version',
+                                 action='version',
+                                 help='print program version and exit')
+         (cmdl_opts, cmdl_args) = cmdl_parser.parse_args()
 
-#+RESULTS: main-function
+         take_snapshot_dwim()
+         return
+
+     if __name__ == '__main__':
+         main()
+
+   #+END_SRC
+
+   #+RESULTS: main-function
 
 * Local variables
 # Local Variables:
