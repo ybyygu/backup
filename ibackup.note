@@ -6,7 +6,7 @@
 
 #+name: UPDATED
 #+BEGIN_SRC rst
-Updated: 2015-04-27 10:00
+Updated: 2015-04-27 10:15
 #+END_SRC
 
 
@@ -564,7 +564,7 @@ v0.1.2
 
       local isync = default.rsync
 
-      isync.checkgauge.onMove = true
+      -- isync.checkgauge.onMove = true
 
       -- called when a process exited.
       -- this can be a rsync command, the startup rsync or the postcmd
@@ -589,28 +589,28 @@ v0.1.2
                   target_dir = backup_rootdir .. "/" .. afile
                   -- log("Normal", source_dir .. " ==> " .. target_dir )
                   -- using per directory filter .rsync-filter
-                  sync{isync, _extra = {"-F"}, source=source_dir, target=target_dir, excludeFrom = "rsync.exclude"}
+                  sync{isync, rsync={_extra = {"-F"}}, source=source_dir, target=target_dir, excludeFrom = "rsync.exclude"}
               end
           end
       end
 
     #+END_SRC
 ** 启动lsyncd
-#+BEGIN_SRC sh :tangle start-lsyncd.sh :shebang #! /usr/bin/env bash :results none
-  # get real script path
-  script_path="$0"
-  [[ -h "$script_path" ]] && script_path=$(readlink "$script_path")
+   #+BEGIN_SRC sh :tangle start-lsyncd.sh :shebang #! /usr/bin/env bash :results none
+     # get real script path
+     script_path="$0"
+     [[ -h "$script_path" ]] && script_path=$(readlink "$script_path")
 
-  script_root=$(cd $(dirname "$script_path"); pwd)
-  echo "script root is: \"$script_root\""
-  cd "$script_root"
+     script_root=$(cd $(dirname "$script_path"); pwd)
+     echo "script root is: \"$script_root\""
+     cd "$script_root"
 
-  while true; do
-      lsyncd -nodaemon -delay 30 lsyncd.lua
-      # sleep 5
-      exit 0
-  done
-#+END_SRC
+     while true; do
+         lsyncd lsyncd.lua
+         # sleep 5
+         exit 0
+     done
+   #+END_SRC
 
 * snapman.py [[elisp:(org-babel-tangle)][tangle]]
 ** outline
