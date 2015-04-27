@@ -6,7 +6,7 @@
 
 #+name: UPDATED
 #+BEGIN_SRC rst
-Updated: 2015-04-27 10:15
+Updated: 2015-04-27 10:23
 #+END_SRC
 
 
@@ -214,7 +214,7 @@ v0.1.2
      handlers:
          logfile:
            class: logging.FileHandler
-           filename: snapman.log
+           filename: /tmp/snapman.log
            formatter: simpleFormatter
            delay: True
            level: !!python/name:logging.NOTSET
