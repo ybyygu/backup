@@ -6,13 +6,13 @@
 
 #+name: UPDATED
 #+BEGIN_SRC rst
-Updated: 2015-04-26 20:34
+Updated: 2015-04-27 10:00
 #+END_SRC
 
 
 #+name: VERSION
 #+begin_src rst
-v0.1.1
+v0.1.2
 #+end_src
 
 * 摘要
@@ -588,7 +588,8 @@ v0.1.1
                   source_dir = path
                   target_dir = backup_rootdir .. "/" .. afile
                   -- log("Normal", source_dir .. " ==> " .. target_dir )
-                  sync{isync, source=source_dir, target=target_dir, excludeFrom = "rsync.exclude"}
+                  -- using per directory filter .rsync-filter
+                  sync{isync, _extra = {"-F"}, source=source_dir, target=target_dir, excludeFrom = "rsync.exclude"}
               end
           end
       end
@@ -1022,7 +1023,7 @@ v0.1.1
      def take_snapshot_dwim():
          snapman = SnapshotManager("/btrfs/backup", "/btrfs/TimeMachine")
          snapman.decay_kbt = 30
-         snapman.decay_pfactor = 30
+         snapman.decay_pfactor = 50
          snapman.take_snapshot()
          snapman.trim_snapshots()
 
