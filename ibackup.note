@@ -6,7 +6,7 @@
 
 #+name: UPDATED
 #+BEGIN_SRC rst
-Updated: 2015-04-27 10:23
+Updated: 2015-04-27 10:26
 #+END_SRC
 
 
@@ -589,7 +589,7 @@ v0.1.2
                   target_dir = backup_rootdir .. "/" .. afile
                   -- log("Normal", source_dir .. " ==> " .. target_dir )
                   -- using per directory filter .rsync-filter
-                  sync{isync, rsync={_extra = {"-F"}}, source=source_dir, target=target_dir, excludeFrom = "rsync.exclude"}
+                  sync{isync, rsync={_extra = {"-F", "--delete"}}, source=source_dir, target=target_dir, excludeFrom = "rsync.exclude"}
               end
           end
       end
