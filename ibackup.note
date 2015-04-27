@@ -6,13 +6,13 @@
 
 #+name: UPDATED
 #+BEGIN_SRC rst
-Updated: 2015-04-27 10:26
+Updated: 2015-04-27 10:43
 #+END_SRC
 
 
 #+name: VERSION
 #+begin_src rst
-v0.1.2
+v0.1.3
 #+end_src
 
 * 摘要
@@ -336,7 +336,7 @@ v0.1.2
       <<evaluate-decay>>
 
       kbt = 30
-      p = 50
+      p = 20
       max_period = kbt*math.log(kbt*p)
       # max_snapshots = kbt*kbt*math.exp(-1.0*max_p/kbt) - kbt*(kbt - max_p)
       print("max period: {:.1f}".format(max_period))
@@ -346,9 +346,9 @@ v0.1.2
     #+END_SRC
 
     #+RESULTS:
-    : max period: 219.4
-    : snapshots in p1: 49.2
-    : 1.29961660442
+    : max period: 191.9
+    : snapshots in p1: 19.7
+    : 0.519846641769
 
     如选kbt=30, p=20, 最近的一个小时可保留约20个版本, 一天(24h)中可保
     留约330个备份, 余下的分布在约8天的序列里.
@@ -589,7 +589,7 @@ v0.1.2
                   target_dir = backup_rootdir .. "/" .. afile
                   -- log("Normal", source_dir .. " ==> " .. target_dir )
                   -- using per directory filter .rsync-filter
-                  sync{isync, rsync={_extra = {"-F", "--delete"}}, source=source_dir, target=target_dir, excludeFrom = "rsync.exclude"}
+                  sync{isync, rsync={_extra = {"-F", "--itemize-changes"}}, source=source_dir, target=target_dir, excludeFrom = "rsync.exclude"}
               end
           end
       end
@@ -1023,7 +1023,7 @@ v0.1.2
      def take_snapshot_dwim():
          snapman = SnapshotManager("/btrfs/backup", "/btrfs/TimeMachine")
          snapman.decay_kbt = 30
-         snapman.decay_pfactor = 50
+         snapman.decay_pfactor = 20
          snapman.take_snapshot()
          snapman.trim_snapshots()
 
