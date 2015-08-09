@@ -6,13 +6,13 @@
 
 #+name: UPDATED
 #+BEGIN_SRC rst
-Updated: 2015-08-09 10:06
+Updated: 2015-08-09 10:18
 #+END_SRC
 
 
 #+name: VERSION
 #+begin_src rst
-v0.1.4
+v0.1.5
 #+end_src
 
 * 摘要
@@ -633,7 +633,7 @@ v0.1.4
 
      # start lsyncd with lock
      # Wait for lock on /var/lock/.myscript.exclusivelock (fd 200) for 2 seconds
-     lock lsyncd.lock || eexit "Only one instance of lsyncd can run at one time."
+     lock lsyncd || eexit "Only one instance of lsyncd can run at one time."
          
      while true; do
          lsyncd lsyncd.lua
