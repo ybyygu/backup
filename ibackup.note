@@ -6,13 +6,13 @@
 
 #+name: UPDATED
 #+BEGIN_SRC rst
-Updated: 2015-04-27 10:43
+Updated: 2015-08-09 10:06
 #+END_SRC
 
 
 #+name: VERSION
 #+begin_src rst
-v0.1.3
+v0.1.4
 #+end_src
 
 * 摘要
@@ -24,6 +24,8 @@ v0.1.3
   2. [X] btrfs
   3. [X] lsyncd.lua
 * [3/3] Memo
+** [2015-08-09 Sun] 使用flock文件锁, 解决lsyncd同时运行的问题 参考: [[http://www.kfirlavi.com/blog/2012/11/06/elegant-locking-of-bash-program/][URL]]
+            
 ** DONE [2015-04-18 Sat] isync-data不应该放在etc这个目录下, 可能导致无穷递归.
    - State "DONE"       from "TODO"       [2015-04-26 Sun 20:32] \\
      似乎没问题的.
@@ -293,9 +295,9 @@ v0.1.3
 
    #+name: r-decay-plot
    #+begin_src R :results output graphics :file images/decay.png
-     curve(exp(-1*x), ylim=c(-0.2,1), xlim=c(0, 10), col="blue")
-     curve(exp(-2*x), add=T, ylim=c(-0.2, 1), xlim=c(0, 10), col="black")
-     curve((10-x)/10*exp(-1*x), add=T, ylim=c(-0.2, 1), xlim=c(0, 10), col="red")
+     curve(exp(-0.5*x), ylim=c(-0.2,1), xlim=c(0, 10), col="blue")
+     curve(exp(-0.9*x), add=T, ylim=c(-0.2, 1), xlim=c(0, 10), col="black")
+     #curve((10-x)/10*exp(-1*x), add=T, ylim=c(-0.2, 1), xlim=c(0, 10), col="red")
 
    #+end_src
 
@@ -335,8 +337,8 @@ v0.1.3
     #+BEGIN_SRC python :results output :cache no :noweb eval
       <<evaluate-decay>>
 
-      kbt = 30
-      p = 20
+      kbt = 50
+      p = 30
       max_period = kbt*math.log(kbt*p)
       # max_snapshots = kbt*kbt*math.exp(-1.0*max_p/kbt) - kbt*(kbt - max_p)
       print("max period: {:.1f}".format(max_period))
@@ -346,9 +348,9 @@ v0.1.3
     #+END_SRC
 
     #+RESULTS:
-    : max period: 191.9
-    : snapshots in p1: 19.7
-    : 0.519846641769
+    : max period: 365.7
+    : snapshots in p1: 29.7
+    : 3.35755841717
 
     如选kbt=30, p=20, 最近的一个小时可保留约20个版本, 一天(24h)中可保
     留约330个备份, 余下的分布在约8天的序列里.
@@ -605,11 +607,41 @@ v0.1.3
      echo "script root is: \"$script_root\""
      cd "$script_root"
 
+     readonly LOCKFILE_DIR=/tmp
+     readonly LOCK_FD=200
+
+     lock() {
+         local prefix=$1
+         local fd=${2:-$LOCK_FD}
+         local lock_file=$LOCKFILE_DIR/$prefix.lock
+
+         # create lock file
+         eval "exec $fd>$lock_file"
+
+         # acquier the lock
+         flock -n $fd \
+             && return 0 \
+             || return 1
+     }
+
+     eexit() {
+         local error_str="$@"
+
+         echo $error_str
+         exit 1
+     }
+
+     # start lsyncd with lock
+     # Wait for lock on /var/lock/.myscript.exclusivelock (fd 200) for 2 seconds
+     lock lsyncd.lock || eexit "Only one instance of lsyncd can run at one time."
+         
      while true; do
          lsyncd lsyncd.lua
          # sleep 5
          exit 0
      done
+
+
    #+END_SRC
 
 * snapman.py [[elisp:(org-babel-tangle)][tangle]]
@@ -756,8 +788,8 @@ v0.1.3
           snap_name = os.path.join(snapshot_parent_dir, dirname)
           logger.debug("snapshot directory: {}".format(snap_name))
 
-          if not os.path.isdir(snap_name):
-              args = "btrfs subvolume snapshot".split()
+          if not os.path.exists(snap_name):
+              args = "btrfs subvolume snapshot -r".split()
               args.append(self.target_subvolume)
               args.append(snap_name)
               logger.info("Called with: {}".format(" ".join(args)))
@@ -1022,8 +1054,8 @@ v0.1.3
    #+BEGIN_SRC python :results output :noweb yes
      def take_snapshot_dwim():
          snapman = SnapshotManager("/btrfs/backup", "/btrfs/TimeMachine")
-         snapman.decay_kbt = 30
-         snapman.decay_pfactor = 20
+         snapman.decay_kbt = 50
+         snapman.decay_pfactor = 30
          snapman.take_snapshot()
          snapman.trim_snapshots()
 
