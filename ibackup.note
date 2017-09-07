@@ -1,4 +1,4 @@
-#+TITLE: ibackup: 数据自动备份系统
+#+TITLE: 数据自动备份系统
 #+SETUPFILE: ~/Notes/common.org
 #+TODO: TODO | DONE(@)
 #+PROPERTY: mkdirp yes
