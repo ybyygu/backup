@@ -338,19 +338,19 @@ v0.1.6
       <<evaluate-decay>>
 
       kbt = 90
-      p = 40
+      p = 30
       max_period = kbt*math.log(kbt*p)
       # max_snapshots = kbt*kbt*math.exp(-1.0*max_p/kbt) - kbt*(kbt - max_p)
-      print("max period: {:.1f}".format(max_period))
+      print("max period: {:.1f} hours".format(max_period))
       snapshots_in_period1 = kbt*p*(1 - math.exp(-1.0/kbt))
       print("snapshots in p1: {:.1f}".format(snapshots_in_period1))
-      print(evaluate_decay_area(109, 110, kbt)*p)
+      print(evaluate_decay_area(0, max_period, kbt)*p)
     #+END_SRC
 
     #+RESULTS:
-    : max period: 737.0
-    : snapshots in p1: 39.8
-    : 11.848697328748026
+    : max period: 711.1 hours
+    : snapshots in p1: 29.8
+    : 2699.0
 
     如选kbt=30, p=20, 最近的一个小时可保留约20个版本, 一天(24h)中可保
     留约330个备份, 余下的分布在约8天的序列里.
@@ -1051,7 +1051,7 @@ v0.1.6
    #+BEGIN_SRC python :results output :noweb yes
      def take_snapshot_dwim():
          snapman = SnapshotManager("/btrfs/backup", "/btrfs/TimeMachine")
-         snapman.decay_kbt = 50
+         snapman.decay_kbt = 90
          snapman.decay_pfactor = 30
          snapman.take_snapshot()
          snapman.trim_snapshots()
