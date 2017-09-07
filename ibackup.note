@@ -786,7 +786,7 @@ v0.1.5
           logger.debug("snapshot directory: {}".format(snap_name))
 
           if not os.path.exists(snap_name):
-              args = "btrfs subvolume snapshot -r".split()
+              args = "sudo btrfs subvolume snapshot -r".split()
               args.append(self.target_subvolume)
               args.append(snap_name)
               logger.info("Called with: {}".format(" ".join(args)))
