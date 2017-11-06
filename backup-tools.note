@@ -1,0 +1,296 @@
+#+TITLE: My backup tools
+#+SETUPFILE: ~/Notes/common.org
+#+SETUPFILE: ~/Notes/latex.org
+#+SETUPFILE: ~/Notes/coding.org
+
+* Memo
+* poor-man's bidirectional synchronization
+乞丐版双向同步工具
+** notes
+- [[http://sujitpal.blogspot.jp/2009/12/unison-replacement-with-rsync.html][Salmon Run: A Unison replacement with rsync]]
+** bash
+#+name: 99c579c3-8ce4-48b2-9003-0871f708fc83
+#+BEGIN_SRC shell :tangle no
+  #!/usr/bin/env bash
+
+  mdir=$(mount|awk '{print $3}'|grep ELIBRARY)
+
+  if [ -z "$mdir" ]; then
+      mdir=$(mount|awk '{print $3}'|grep Kindle)/documents
+  fi
+
+  adir=$(cd $(dirname $0); pwd)
+  dir_boox="$mdir/$(basename $adir)"
+
+  if [ ! -d "$dir_boox" ]; then
+      mkdir -p "$dir_boox" || exit 1
+  fi
+
+  elibrary-back-sync.py "./" "$dir_boox"/
+
+  rsync -rvu --size-only --exclude="*.sh" --exclude=".onyx" --exclude="Makefile" --copy-links "$dir_boox"/ ./
+  rsync -rvu --size-only --exclude="*.sh" --exclude=".onyx" --exclude="Makefile" --copy-links --delete ./ "$dir_boox"/
+
+#+END_SRC
+** src: pmbisync
+:PROPERTIES:
+:header-args: :tangle pkg/bin/pmbisync :comments link :padline yes :mkdirp yes :shebang #! /usr/bin/env python3
+:END:
+*** header
+#+name: fc0e7920-d0cd-4d3c-8a66-4c12646be4b8
+#+begin_src python
+  # -*- coding: utf-8 -*-
+  #====================================================================#
+  #   DESCRIPTION:  poor man's bidirectional synchronization tool
+  #
+  #       OPTIONS:  ---
+  #  REQUIREMENTS:  ---
+  #         NOTES:  ---
+  #        AUTHOR:  Wenping Guo (ybyygu)
+  #         EMAIL:  winpng@gmail.com
+  #       LICENCE:  GPL version 2 or upper
+  #       CREATED:  <2013-05-05 Sun 16:00>
+  #       UPDATED:  <>
+  #====================================================================#
+
+#+end_src
+*** globals
+#+name: 59a85edb-8d85-475d-a6ff-95a269cd9014
+#+begin_src python
+  __VERSION__ = '0.1'
+
+  import os
+  import sys
+  import getopt
+  import os.path
+  import cPickle as pickle
+  import hashlib
+
+  PICKLE_FILE_NAME = "snapshot.pickle"
+
+#+end_src
+
+#+RESULTS: 59a85edb-8d85-475d-a6ff-95a269cd9014
+
+*** core
+#+name: 995203d6-af98-4371-9973-06b263dd6392
+#+begin_src python
+  def get_files(rootdir):
+      files_list = []
+      old_cwd = os.getcwd()
+      os.chdir(rootdir)
+      for curdir, subdirs, files in os.walk("./"):
+          # ignore files in current directory
+          if curdir == "./":
+              continue
+          for afile in files:
+              files_list.append(os.path.join(curdir, afile))
+
+      os.chdir(old_cwd)
+      return files_list
+
+  def save_snapshot(rootdir, picklefile):
+      files = get_files(rootdir)
+      pickle.dump(files, open(picklefile, "wb" ))
+
+  def load_snapshot(picklefile):
+      return pickle.load(open(picklefile, "rb"))
+
+  def get_removed_since_sync(picklefile, destdir):
+      old_files = load_snapshot(picklefile)
+      cur_files = get_files(destdir)
+
+      removed_files = []
+      for afile in old_files:
+          if afile not in cur_files:
+              removed_files.append(afile)
+      return removed_files
+
+  def bidirectional_sync(srcdir, destdir):
+      picklefile = os.path.join(srcdir, PICKLE_FILE_NAME)
+
+      if os.path.exists(picklefile):
+          # removed files in the dest side
+          for afile in get_removed_since_sync(picklefile, destdir):
+              afile = os.path.join(srcdir, afile)
+              if not os.path.exists(afile):
+                  continue
+
+              yorn = raw_input("Remove {:} [Y/n/q]? ".format(afile)).lower()
+              # the default answer is Yes
+              if not yorn:
+                  yorn = "y"
+
+              if (yorn == "y"):
+                  print("do_sync")
+                  os.remove(afile)
+              elif (yorn == "q"):
+                  break
+          # removed files in the src side
+          for afile in get_removed_since_sync(picklefile, srcdir):
+              print afile
+              afile = os.path.join(destdir, afile)
+              if not os.path.exists(afile):
+                  continue
+              yorn = raw_input("Remove {:} [Y/n/q]? ".format(afile)).lower()
+              # the default answer is Yes
+              if not yorn:
+                  yorn = "y"
+
+              if (yorn == "y"):
+                  print("do_sync")
+                  os.remove(afile)
+              elif (yorn == "q"):
+                  break
+      else:
+          print("No snapshot found. Save now.")
+      save_snapshot(srcdir, picklefile)
+
+#+end_src
+*** cmdline
+#+name: fe05f3b3-13f9-4ca0-9070-84abf97bc27c
+#+begin_src python
+  def main(argv=None):
+      import optparse
+
+      if argv == None: argv = sys.argv
+
+      # parsing cmdline
+      cmdl_usage = 'usage: %prog srcdir destdir'
+      cmdl_version = "%prog " + __VERSION__
+      cmdl_parser = optparse.OptionParser(usage=cmdl_usage, \
+                                          version=cmdl_version, \
+                                          conflict_handler='resolve')
+      cmdl_parser.add_option('-h', '--help',
+                             action='help',
+                             help='print this help text and exit')
+      cmdl_parser.add_option('-v', '--version',
+                             action='version',
+                             help='print program version and exit')
+      (cmdl_opts, cmdl_args) = cmdl_parser.parse_args()
+
+      if len(cmdl_args) != 2:
+          cmdl_parser.print_usage()
+          return 1
+
+      srcdir, destdir = cmdl_args
+
+      bidirectional_sync(srcdir, destdir)
+
+
+  if __name__ == '__main__':
+      main()
+
+#+end_src
+* send
+** header
+#+name: 20cf001a-a056-4824-bbcb-99ff99979a89
+#+begin_src shell
+  #===============================================================================#
+  #   DESCRIPTION: send.sh
+  #
+  #       OPTIONS:  ---
+  #  REQUIREMENTS:  ---
+  #         NOTES:  ---
+  #        AUTHOR:  Wenping Guo (ybyygu)
+  #         EMAIL:  winpng@gmail.com
+  #       VERSION:  0.1
+  #       CREATED:  <2008-03-08 Sat 12:00>
+  #       UPDATED:  <>
+  #===============================================================================#
+  EXCLUDES=$HOME/etc/backup/rsync.exclude
+#+end_src
+** main
+#+name: 0f7c77b0-517b-4f69-b629-de77dd70dd2a
+#+begin_src shell
+  # check gui or not before start
+  gui=`env|grep DISPLAY`
+
+  inform()
+  {
+      if [[ "$gui" != "" ]]; then
+          zenity --info --text "$1"
+      else
+          echo "$1"
+      fi
+  }
+
+  # check $? for the answer
+  query()
+  {
+      if [[ "$gui" != "" ]]; then
+          zenity --question --text "$1"
+      else
+          echo -n "$1 (Y/n)"
+          read n && if [[ "$n" == "" || "$n" == "y" || "$n" == "Y" ]]; then echo -n ; else /dev/null 2>/dev/null;fi
+      fi
+  }
+
+  # query remote host
+  if ! [ $# -eq 1 ]; then
+      inform "remote host must be known before forwarding."
+      exit 0
+  fi
+
+  # todo: add the ability to parse remote path
+  remote_host=`echo $1|awk 'BEGIN{FS=":"}{print $1}'`
+  remote_path=`echo $1|awk 'BEGIN{FS=":"}{print $2}'`
+
+  # get current place, stripped home prefix
+  curdir=`pwd`
+
+  if [[ "$curdir" == ~ ]]; then
+      inform "processing whole home directory is currently not supported."
+      exit 1
+  fi
+
+  # build remote path; todo: parse from command line option
+  if [ -z "$remote_path" ]; then
+      remote_path=${curdir#~/}
+  fi
+
+  # check if remote place exist
+  ssh $remote_host cd \"$remote_path\" 2>/dev/null
+  if ! [ $? -eq 0 ]; then
+      inform "remote directory seem not exist in the remote host."
+      exit 1
+  fi
+
+  # confirm synchronizing direction:
+  # send local data to the remote host or fetch remote host data into local machine
+  direction=`basename $0`
+  direction=${direction%.sh}
+
+  # handle path with space
+  # todo: only one space was replaced
+  remote_path="${remote_path/ /?}"
+  curdir="${curdir/ /?}"
+
+  if [[ "$direction" == "send" ]]; then
+      cmd="rsync -av -F --ignore-errors --delete --delete-excluded --exclude-from=$EXCLUDES $curdir/ $remote_host:$remote_path"
+      txt="WARNING(delete): Send data in [$curdir]  to host [$remote_host] ?\n$cmd"
+  elif [[ "$direction" == "fetch" ]]; then
+      cmd="rsync -av --ignore-errors --delete --delete-excluded --exclude-from=$EXCLUDES $remote_host:$remote_path/ $curdir"
+      txt="Fetch data from host [$remote_host] into [$curdir] ?\n$cmd"
+  elif [[ "$direction" == "update" ]]; then
+      cmd="rsync -av --copy-links --exclude-from=$EXCLUDES $curdir/ $remote_host:$remote_path"
+      txt="Update data on remote host [$remote_host] based on [$curdir] ?\n$cmd"
+  else
+      # todo: for future
+      exit 1
+  fi
+
+  # confirmation is always needed!
+  query "$txt"
+
+  if ! [ $? -eq 0 ]; then
+      exit 2
+  fi
+
+  exec $cmd
+
+#+end_src
+* Local variables
+# Local Variables:
+# mode: org
+# end:

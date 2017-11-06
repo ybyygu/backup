@@ -1,0 +1,135 @@
+#! /usr/bin/env python3
+# [[file:~/Workspace/Programming/backup/backup-tools.note::fc0e7920-d0cd-4d3c-8a66-4c12646be4b8][fc0e7920-d0cd-4d3c-8a66-4c12646be4b8]]
+# -*- coding: utf-8 -*-
+#====================================================================#
+#   DESCRIPTION:  poor man's bidirectional synchronization tool
+#
+#       OPTIONS:  ---
+#  REQUIREMENTS:  ---
+#         NOTES:  ---
+#        AUTHOR:  Wenping Guo (ybyygu)
+#         EMAIL:  winpng@gmail.com
+#       LICENCE:  GPL version 2 or upper
+#       CREATED:  <2013-05-05 Sun 16:00>
+#       UPDATED:  <2017-11-06 Mon 20:06>
+#====================================================================#
+# fc0e7920-d0cd-4d3c-8a66-4c12646be4b8 ends here
+
+# [[file:~/Workspace/Programming/backup/backup-tools.note::59a85edb-8d85-475d-a6ff-95a269cd9014][59a85edb-8d85-475d-a6ff-95a269cd9014]]
+__VERSION__ = '0.1'
+
+import os
+import sys
+import getopt
+import os.path
+import cPickle as pickle
+import hashlib
+
+PICKLE_FILE_NAME = "snapshot.pickle"
+# 59a85edb-8d85-475d-a6ff-95a269cd9014 ends here
+
+# [[file:~/Workspace/Programming/backup/backup-tools.note::995203d6-af98-4371-9973-06b263dd6392][995203d6-af98-4371-9973-06b263dd6392]]
+def get_files(rootdir):
+    files_list = []
+    old_cwd = os.getcwd()
+    os.chdir(rootdir)
+    for curdir, subdirs, files in os.walk("./"):
+        # ignore files in current directory
+        if curdir == "./":
+            continue
+        for afile in files:
+            files_list.append(os.path.join(curdir, afile))
+
+    os.chdir(old_cwd)
+    return files_list
+
+def save_snapshot(rootdir, picklefile):
+    files = get_files(rootdir)
+    pickle.dump(files, open(picklefile, "wb" ))
+
+def load_snapshot(picklefile):
+    return pickle.load(open(picklefile, "rb"))
+
+def get_removed_since_sync(picklefile, destdir):
+    old_files = load_snapshot(picklefile)
+    cur_files = get_files(destdir)
+
+    removed_files = []
+    for afile in old_files:
+        if afile not in cur_files:
+            removed_files.append(afile)
+    return removed_files
+
+def bidirectional_sync(srcdir, destdir):
+    picklefile = os.path.join(srcdir, PICKLE_FILE_NAME)
+
+    if os.path.exists(picklefile):
+        # removed files in the dest side
+        for afile in get_removed_since_sync(picklefile, destdir):
+            afile = os.path.join(srcdir, afile)
+            if not os.path.exists(afile):
+                continue
+
+            yorn = raw_input("Remove {:} [Y/n/q]? ".format(afile)).lower()
+            # the default answer is Yes
+            if not yorn:
+                yorn = "y"
+
+            if (yorn == "y"):
+                print("do_sync")
+                os.remove(afile)
+            elif (yorn == "q"):
+                break
+        # removed files in the src side
+        for afile in get_removed_since_sync(picklefile, srcdir):
+            print afile
+            afile = os.path.join(destdir, afile)
+            if not os.path.exists(afile):
+                continue
+            yorn = raw_input("Remove {:} [Y/n/q]? ".format(afile)).lower()
+            # the default answer is Yes
+            if not yorn:
+                yorn = "y"
+
+            if (yorn == "y"):
+                print("do_sync")
+                os.remove(afile)
+            elif (yorn == "q"):
+                break
+    else:
+        print("No snapshot found. Save now.")
+    save_snapshot(srcdir, picklefile)
+# 995203d6-af98-4371-9973-06b263dd6392 ends here
+
+# [[file:~/Workspace/Programming/backup/backup-tools.note::fe05f3b3-13f9-4ca0-9070-84abf97bc27c][fe05f3b3-13f9-4ca0-9070-84abf97bc27c]]
+def main(argv=None):
+    import optparse
+
+    if argv == None: argv = sys.argv
+
+    # parsing cmdline
+    cmdl_usage = 'usage: %prog srcdir destdir'
+    cmdl_version = "%prog " + __VERSION__
+    cmdl_parser = optparse.OptionParser(usage=cmdl_usage, \
+                                        version=cmdl_version, \
+                                        conflict_handler='resolve')
+    cmdl_parser.add_option('-h', '--help',
+                           action='help',
+                           help='print this help text and exit')
+    cmdl_parser.add_option('-v', '--version',
+                           action='version',
+                           help='print program version and exit')
+    (cmdl_opts, cmdl_args) = cmdl_parser.parse_args()
+
+    if len(cmdl_args) != 2:
+        cmdl_parser.print_usage()
+        return 1
+
+    srcdir, destdir = cmdl_args
+
+    bidirectional_sync(srcdir, destdir)
+
+
+if __name__ == '__main__':
+    main()
+# fe05f3b3-13f9-4ca0-9070-84abf97bc27c ends here
