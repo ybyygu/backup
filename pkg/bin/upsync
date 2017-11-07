@@ -1,0 +1,102 @@
+#! /usr/bin/env python3
+# [[file:~/Workspace/Programming/backup/backup-tools.note::20cf001a-a056-4824-bbcb-99ff99979a89][20cf001a-a056-4824-bbcb-99ff99979a89]]
+#===============================================================================#
+#   DESCRIPTION: synchronize remote site with local
+#
+#       OPTIONS:  ---
+#  REQUIREMENTS:  ---
+#         NOTES:  ---
+#        AUTHOR:  Wenping Guo (ybyygu)
+#         EMAIL:  winpng@gmail.com
+#       VERSION:  0.1
+#       CREATED:  <2008-03-08 Sat 12:00>
+#       UPDATED:  <2017-11-07 Tue 09:20>
+#===============================================================================#
+EXCLUDES=$HOME/Backup/rsync.exclude
+# 20cf001a-a056-4824-bbcb-99ff99979a89 ends here
+
+# [[file:~/Workspace/Programming/backup/backup-tools.note::0f7c77b0-517b-4f69-b629-de77dd70dd2a][0f7c77b0-517b-4f69-b629-de77dd70dd2a]]
+# check gui or not before start
+gui=`env|grep DISPLAY`
+
+inform()
+{
+    if [[ "$gui" != "" ]]; then
+        zenity --info --text "$1"
+    else
+        echo "$1"
+    fi
+}
+
+# check $? for the answer
+query()
+{
+    if [[ "$gui" != "" ]]; then
+        zenity --question --text "$1"
+    else
+        echo -n "$1 (Y/n)"
+        read n && if [[ "$n" == "" || "$n" == "y" || "$n" == "Y" ]]; then echo -n ; else /dev/null 2>/dev/null;fi
+    fi
+}
+
+# query remote host
+if ! [ $# -eq 1 ]; then
+    inform "remote host must be known before forwarding."
+    exit 0
+fi
+
+# todo: add the ability to parse remote path
+remote_host=`echo $1|awk 'BEGIN{FS=":"}{print $1}'`
+remote_path=`echo $1|awk 'BEGIN{FS=":"}{print $2}'`
+
+# get current place, stripped home prefix
+curdir=`pwd`
+
+if [[ "$curdir" == ~ ]]; then
+    inform "processing whole home directory is currently not supported."
+    exit 1
+fi
+
+# build remote path; todo: parse from command line option
+if [ -z "$remote_path" ]; then
+    remote_path=${curdir#~/}
+fi
+
+# check if remote place exist
+ssh $remote_host cd \"$remote_path\" 2>/dev/null
+if ! [ $? -eq 0 ]; then
+    inform "remote directory seem not exist in the remote host."
+    exit 1
+fi
+
+# confirm synchronizing direction:
+# send local data to the remote host or fetch remote host data into local machine
+direction=`basename $0`
+direction=${direction%.sh}
+
+# handle path with space
+# todo: only one space was replaced
+remote_path="${remote_path/ /?}"
+curdir="${curdir/ /?}"
+
+if [[ "$direction" == "send" ]]; then
+    cmd="rsync -av -F --ignore-errors --delete --delete-excluded --exclude-from=$EXCLUDES $curdir/ $remote_host:$remote_path"
+    txt="WARNING(delete): Send data in [$curdir]  to host [$remote_host] ?\n$cmd"
+elif [[ "$direction" == "fetch" ]]; then
+    cmd="rsync -av --ignore-errors --delete --delete-excluded --exclude-from=$EXCLUDES $remote_host:$remote_path/ $curdir"
+    txt="Fetch data from host [$remote_host] into [$curdir] ?\n$cmd"
+elif [[ "$direction" == "update" ]]; then
+    cmd="rsync -av --copy-links --exclude-from=$EXCLUDES $curdir/ $remote_host:$remote_path"
+    txt="Update data on remote host [$remote_host] based on [$curdir] ?\n$cmd"
+else
+    # todo: for future
+    exit 1
+fi
+
+# confirmation is always needed!
+query "$txt"
+
+if [[ $? -eq 0 ]]; then
+    exec $cmd
+fi
+# 0f7c77b0-517b-4f69-b629-de77dd70dd2a ends here

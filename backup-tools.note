@@ -4,6 +4,38 @@
 #+SETUPFILE: ~/Notes/coding.org
 
 * Memo
+* rsync.exclude
+#+header: :tangle ~/Backup/rsync.exclude :mkdirp yes
+#+name: 096da3bf-b632-4b45-a0b3-a72c6cd81605
+#+BEGIN_SRC text
+  ,*~
+  ,*.swp
+  .*.swp
+  .*.swx
+  ,*.chk
+  ,*.mp3
+  ,*.ogg
+  ,*.pyc
+  ,*.bak
+  ,*.fbu
+  ,*.tmp
+  ,*.rmvb
+  .#*
+  .ropeproject
+  .~*#
+  cache.rdf
+  random_seed
+  ~$*.doc
+  weave/changes/*
+  ,*Cache/*
+  cache_menu/*
+  ,*emacs.d/history
+  ,*/fcitx/table/*
+  ,*/fcitx/*/pyindex.dat
+  FCITX_*_TEMP
+  ,*/.git/index.lock
+#+END_SRC
+
 * poor-man's bidirectional synchronization
 乞丐版双向同步工具
 ** notes
@@ -52,8 +84,8 @@
   #       CREATED:  <2013-05-05 Sun 16:00>
   #       UPDATED:  <>
   #====================================================================#
-
 #+end_src
+
 *** globals
 #+name: 59a85edb-8d85-475d-a6ff-95a269cd9014
 #+begin_src python
@@ -69,8 +101,6 @@
   PICKLE_FILE_NAME = "snapshot.pickle"
 
 #+end_src
-
-#+RESULTS: 59a85edb-8d85-475d-a6ff-95a269cd9014
 
 *** core
 #+name: 995203d6-af98-4371-9973-06b263dd6392
@@ -182,12 +212,15 @@
       main()
 
 #+end_src
-* send
+* upsync
+:PROPERTIES:
+:header-args: :tangle pkg/bin/upsync :comments link :padline yes :mkdirp yes :shebang #! /usr/bin/env python3
+:END:
 ** header
 #+name: 20cf001a-a056-4824-bbcb-99ff99979a89
 #+begin_src shell
   #===============================================================================#
-  #   DESCRIPTION: send.sh
+  #   DESCRIPTION: synchronize remote site with local
   #
   #       OPTIONS:  ---
   #  REQUIREMENTS:  ---
@@ -198,7 +231,7 @@
   #       CREATED:  <2008-03-08 Sat 12:00>
   #       UPDATED:  <>
   #===============================================================================#
-  EXCLUDES=$HOME/etc/backup/rsync.exclude
+  EXCLUDES=$HOME/Backup/rsync.exclude
 #+end_src
 ** main
 #+name: 0f7c77b0-517b-4f69-b629-de77dd70dd2a
@@ -283,13 +316,15 @@
   # confirmation is always needed!
   query "$txt"
 
-  if ! [ $? -eq 0 ]; then
-      exit 2
+  if [[ $? -eq 0 ]]; then
+      exec $cmd
   fi
 
-  exec $cmd
 
 #+end_src
+
+#+RESULTS: 0f7c77b0-517b-4f69-b629-de77dd70dd2a
+
 * Local variables
 # Local Variables:
 # mode: org
