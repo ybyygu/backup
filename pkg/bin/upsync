@@ -1,4 +1,4 @@
-#! /usr/bin/env python3
+#! /usr/bin/env python
 # [[file:~/Workspace/Programming/backup/backup-tools.note::20cf001a-a056-4824-bbcb-99ff99979a89][20cf001a-a056-4824-bbcb-99ff99979a89]]
 #===============================================================================#
 #   DESCRIPTION: synchronize remote site with local
@@ -8,95 +8,147 @@
 #         NOTES:  ---
 #        AUTHOR:  Wenping Guo (ybyygu)
 #         EMAIL:  winpng@gmail.com
-#       VERSION:  0.1
+#       VERSION:  0.2
 #       CREATED:  <2008-03-08 Sat 12:00>
-#       UPDATED:  <2017-11-07 Tue 09:20>
+#       UPDATED:  <2017-11-08 Wed 16:53>
 #===============================================================================#
-EXCLUDES=$HOME/Backup/rsync.exclude
 # 20cf001a-a056-4824-bbcb-99ff99979a89 ends here
 
-# [[file:~/Workspace/Programming/backup/backup-tools.note::0f7c77b0-517b-4f69-b629-de77dd70dd2a][0f7c77b0-517b-4f69-b629-de77dd70dd2a]]
-# check gui or not before start
-gui=`env|grep DISPLAY`
+# [[file:~/Workspace/Programming/backup/backup-tools.note::cb1680bc-1c16-433f-b54e-d22ee537ad43][cb1680bc-1c16-433f-b54e-d22ee537ad43]]
+import os
+import subprocess
 
-inform()
-{
-    if [[ "$gui" != "" ]]; then
-        zenity --info --text "$1"
-    else
-        echo "$1"
-    fi
-}
+GLOBAL_EXCLUDE_FILE = os.path.expanduser("~/Backup/rsync.exclude")
 
-# check $? for the answer
-query()
-{
-    if [[ "$gui" != "" ]]; then
-        zenity --question --text "$1"
-    else
-        echo -n "$1 (Y/n)"
-        read n && if [[ "$n" == "" || "$n" == "y" || "$n" == "Y" ]]; then echo -n ; else /dev/null 2>/dev/null;fi
-    fi
-}
+# crash on ipython
+import sys
 
-# query remote host
-if ! [ $# -eq 1 ]; then
-    inform "remote host must be known before forwarding."
-    exit 0
-fi
+class ExceptionHook:
+    instance = None
 
-# todo: add the ability to parse remote path
-remote_host=`echo $1|awk 'BEGIN{FS=":"}{print $1}'`
-remote_path=`echo $1|awk 'BEGIN{FS=":"}{print $2}'`
+    def __call__(self, *args, **kwargs):
+        if self.instance is None:
+            from IPython.core import ultratb
+            self.instance = ultratb.FormattedTB(mode='Plain',
+                 color_scheme='Linux', call_pdb=1)
+        return self.instance(*args, **kwargs)
 
-# get current place, stripped home prefix
-curdir=`pwd`
+sys.excepthook = ExceptionHook()
+# cb1680bc-1c16-433f-b54e-d22ee537ad43 ends here
 
-if [[ "$curdir" == ~ ]]; then
-    inform "processing whole home directory is currently not supported."
-    exit 1
-fi
+# [[file:~/Workspace/Programming/backup/backup-tools.note::8585c9ad-cbdc-4910-8600-1bcf41945efe][8585c9ad-cbdc-4910-8600-1bcf41945efe]]
+def user_query_continue(text):
+    cmdline = 'zenity --text-info --width=600 --height=600'.split()
 
-# build remote path; todo: parse from command line option
-if [ -z "$remote_path" ]; then
-    remote_path=${curdir#~/}
-fi
+    sp = subprocess.Popen(cmdline, universal_newlines=True,
+                          stdin=subprocess.PIPE,
+                          stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE)
+    output, error = sp.communicate(text)
+    # user pressed button "cancel"
+    if sp.returncode == 0:
+        return True
+    elif sp.returncode == 1:
+        return False
+    else:
+        print('WARNING: unexpected return code {}'.format(sp.returncode))
+        return False
+# 8585c9ad-cbdc-4910-8600-1bcf41945efe ends here
 
-# check if remote place exist
-ssh $remote_host cd \"$remote_path\" 2>/dev/null
-if ! [ $? -eq 0 ]; then
-    inform "remote directory seem not exist in the remote host."
-    exit 1
-fi
+# [[file:~/Workspace/Programming/backup/backup-tools.note::8ded775a-2e10-4716-b77f-852adf5d3bb5][8ded775a-2e10-4716-b77f-852adf5d3bb5]]
+def _call_rsync(cmdline):
+    try:
+        output = subprocess.check_output(cmdline, universal_newlines=True, stderr=subprocess.STDOUT)
+    except subprocess.CalledProcessError as e:
+        msg = ' rsync failed with following errors '.center(70, '=')
+        print(msg)
+        print('{}'.format(e.stdout))
+        print('cmdline:')
+        print(cmdline)
+        return None
 
-# confirm synchronizing direction:
-# send local data to the remote host or fetch remote host data into local machine
-direction=`basename $0`
-direction=${direction%.sh}
+    return output
 
-# handle path with space
-# todo: only one space was replaced
-remote_path="${remote_path/ /?}"
-curdir="${curdir/ /?}"
 
-if [[ "$direction" == "send" ]]; then
-    cmd="rsync -av -F --ignore-errors --delete --delete-excluded --exclude-from=$EXCLUDES $curdir/ $remote_host:$remote_path"
-    txt="WARNING(delete): Send data in [$curdir]  to host [$remote_host] ?\n$cmd"
-elif [[ "$direction" == "fetch" ]]; then
-    cmd="rsync -av --ignore-errors --delete --delete-excluded --exclude-from=$EXCLUDES $remote_host:$remote_path/ $curdir"
-    txt="Fetch data from host [$remote_host] into [$curdir] ?\n$cmd"
-elif [[ "$direction" == "update" ]]; then
-    cmd="rsync -av --copy-links --exclude-from=$EXCLUDES $curdir/ $remote_host:$remote_path"
-    txt="Update data on remote host [$remote_host] based on [$curdir] ?\n$cmd"
-else
-    # todo: for future
-    exit 1
-fi
+def mirror_using_rsync(src_dir, dest_dir):
+    """mirror current directory to remote host
 
-# confirmation is always needed!
-query "$txt"
+    Parameter
+    ---------
+    src_dir, dest_dir: rsync SRC and DEST args
+    """
 
-if [[ $? -eq 0 ]]; then
-    exec $cmd
-fi
-# 0f7c77b0-517b-4f69-b629-de77dd70dd2a ends here
+    if not os.path.exists(GLOBAL_EXCLUDE_FILE):
+        print("rsync exclude file {}: not found.".format(GLOBAL_EXCLUDE_FILE))
+        return
+
+    cmdline = 'rsync -av --ignore-errors --delete --delete-excluded'.split()
+    cmdline.append('-F')             # use per directory filer file: .rsync-filter
+    cmdline.append('--itemize-changes')
+    cmdline.append('--omit-dir-times')
+    cmdline.append('--omit-link-times')
+    cmdline.append('--protect-args') # for directory containing space
+    cmdline.append('--exclude-from={}'.format(GLOBAL_EXCLUDE_FILE))
+
+    current_path = os.getcwd()
+
+    # make sure path ends with slash
+    src_dir = src_dir if src_dir.endswith('/') else src_dir + '/'
+    dest_dir = dest_dir if dest_dir.endswith('/') else dest_dir + '/'
+
+    cmdline.append('{}'.format(src_dir))
+    cmdline.append('{}'.format(dest_dir))
+
+    # sanity check by calling rsync in dry-run mode
+    cmdline_dryrun = cmdline.copy()
+    cmdline_dryrun.append('--dry-run')
+
+    # ask user if we should continue
+    output = _call_rsync(cmdline_dryrun)
+    if user_query_continue(output):
+        output = _call_rsync(cmdline)
+    else:
+        print('cancelled by user.')
+
+
+def mirror_dwim(remote_host):
+    """guess remote path from current directory name and save a mirror to remote
+
+    Parameter
+    ---------
+    remote_host: the remote host name to be synchronized
+    """
+    currdir = os.getcwd()
+
+    remote_path = "{}:{}".format(remote_host, currdir)
+
+    mirror_using_rsync(currdir, remote_path)
+# 8ded775a-2e10-4716-b77f-852adf5d3bb5 ends here
+
+# [[file:~/Workspace/Programming/backup/backup-tools.note::6b1828ef-5800-44aa-bb9a-132f6f413c4c][6b1828ef-5800-44aa-bb9a-132f6f413c4c]]
+def main():
+    version = "%(prog)s " + "v0.1"
+    desc = "synchronize remote site with local under current directory"
+    parser = argparse.ArgumentParser(description=desc)
+    parser.add_argument('-v', '--version',
+                        version=version,
+                        action='version')
+
+    parser.add_argument('remote',
+                        type=str,
+                        help='remote hostname')
+
+    if len(sys.argv) == 1:
+        parser.print_help()
+        return
+
+    cmdl = parser.parse_args()
+    if cmdl.remote:
+        mirror_dwim(cmdl.remote)
+
+if __name__ == '__main__':
+    import argparse
+    import sys
+
+    main()
+# 6b1828ef-5800-44aa-bb9a-132f6f413c4c ends here
