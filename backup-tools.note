@@ -4,6 +4,21 @@
 #+SETUPFILE: ~/Notes/coding.org
 
 * Memo
+* install
+** makefile
+使用gnu stow来将pkg目录下的文件安装symlink到$HOME/.local
+
+#+header: :tangle makefile
+#+name: e15fb2e8-3a89-4ebe-b788-3135e14bc564
+#+BEGIN_SRC makefile -i
+install: stow
+	stow --verbose --adopt --no-folding --target ~/.local pkg
+uninstall:
+	stow --verbose --target ~/.local --delete pkg
+stow:
+	which stow
+#+END_SRC
+
 * rsync.exclude
 #+header: :tangle ~/Backup/rsync.exclude :mkdirp yes
 #+name: 096da3bf-b632-4b45-a0b3-a72c6cd81605
