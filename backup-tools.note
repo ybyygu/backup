@@ -260,12 +260,21 @@ stow:
 #+end_src
 
 ** interaction
-使用zenity与用户交互
+如果在X环境中, 使用zenity与用户交互, 否则使用命令行界面.
+
 #+name: 8585c9ad-cbdc-4910-8600-1bcf41945efe
 #+begin_src python
   def user_query_continue(text):
-      cmdline = 'zenity --text-info --width=600 --height=600'.split()
+      in_x = os.environ.get('DISPLAY')
 
+      if not in_x:
+          # show user the text for sanity check
+          print(text)
+          yorn = input('Continue or not (y/N)? ')
+          return yorn == "y"
+
+      # when we are in X environment
+      cmdline = 'zenity --text-info --width=600 --height=600'.split()
       sp = subprocess.Popen(cmdline, universal_newlines=True,
                             stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE,
@@ -334,6 +343,7 @@ stow:
       # ask user if we should continue
       output = _call_rsync(cmdline_dryrun)
       if user_query_continue(output):
+          print("cmdline: {}".format(cmdline))
           output = _call_rsync(cmdline)
       else:
           print('cancelled by user.')

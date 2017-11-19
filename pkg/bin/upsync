@@ -10,7 +10,7 @@
 #         EMAIL:  winpng@gmail.com
 #       VERSION:  0.2
 #       CREATED:  <2008-03-08 Sat 12:00>
-#       UPDATED:  <2017-11-08 Wed 16:53>
+#       UPDATED:  <2017-11-19 Sun 15:55>
 #===============================================================================#
 # 20cf001a-a056-4824-bbcb-99ff99979a89 ends here
 
@@ -19,27 +19,20 @@ import os
 import subprocess
 
 GLOBAL_EXCLUDE_FILE = os.path.expanduser("~/Backup/rsync.exclude")
-
-# crash on ipython
-import sys
-
-class ExceptionHook:
-    instance = None
-
-    def __call__(self, *args, **kwargs):
-        if self.instance is None:
-            from IPython.core import ultratb
-            self.instance = ultratb.FormattedTB(mode='Plain',
-                 color_scheme='Linux', call_pdb=1)
-        return self.instance(*args, **kwargs)
-
-sys.excepthook = ExceptionHook()
 # cb1680bc-1c16-433f-b54e-d22ee537ad43 ends here
 
 # [[file:~/Workspace/Programming/backup/backup-tools.note::8585c9ad-cbdc-4910-8600-1bcf41945efe][8585c9ad-cbdc-4910-8600-1bcf41945efe]]
 def user_query_continue(text):
-    cmdline = 'zenity --text-info --width=600 --height=600'.split()
+    in_x = os.environ.get('DISPLAY')
 
+    if not in_x:
+        # show user the text for sanity check
+        print(text)
+        yorn = input('Continue or not (y/N)? ')
+        return yorn == "y"
+
+    # when we are in X environment
+    cmdline = 'zenity --text-info --width=600 --height=600'.split()
     sp = subprocess.Popen(cmdline, universal_newlines=True,
                           stdin=subprocess.PIPE,
                           stdout=subprocess.PIPE,
@@ -106,6 +99,7 @@ def mirror_using_rsync(src_dir, dest_dir):
     # ask user if we should continue
     output = _call_rsync(cmdline_dryrun)
     if user_query_continue(output):
+        print("cmdline: {}".format(cmdline))
         output = _call_rsync(cmdline)
     else:
         print('cancelled by user.')
