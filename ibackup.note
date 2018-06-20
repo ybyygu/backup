@@ -16,14 +16,17 @@ v0.1.6
 #+end_src
 
 * 摘要
-  * 将isync-data下的数据 *实时* 同步至isync-backup下
-  * 在isync-snapshots下做快照, 保存版本信息
-  * 按指数衰减算法清理isync-snapshots下的快照
+1. 将isync-data下的数据 *实时* 同步至isync-backup下
+2. 在isync-snapshots下做快照, 保存版本信息
+3. 按指数衰减算法清理isync-snapshots下的快照
+
 * Checklist [3/3]
-  1. [X] ifmain version, time-stamp...
-  2. [X] btrfs
-  3. [X] lsyncd.lua
-* Memo [3/3]
+1. [X] ifmain version, time-stamp...
+2. [X] btrfs
+3. [X] lsyncd.lua
+
+* Memo [3/4]
+** TODO [2018-06-20 Wed] 可参考这里对snapshot的处理方式: [[https://github.com/ArnaudLevaufre/btrfs-simple-snapshots][URL]]
 ** [2015-08-09 Sun] 使用flock文件锁, 解决lsyncd同时运行的问题 参考: [[http://www.kfirlavi.com/blog/2012/11/06/elegant-locking-of-bash-program/][URL]]
             
 ** DONE [2015-04-18 Sat] isync-data不应该放在etc这个目录下, 可能导致无穷递归.
@@ -285,10 +288,9 @@ v0.1.6
 
 * 备份清理算法
 ** 指数衰减.
-   随着时间的增加, 备份保留的意义递减. 这被称为牛顿冷却定律, 其实与玻
-   尔兹曼分布一回事.
+随着时间的增加, 备份保留的意义递减. 这被称为牛顿冷却定律, 其实与玻尔兹曼分布一回
+事.
 *** 函数形式
-
     \( f(e)=p\cdot\exp(-\frac{e}{k_{b}T}) \), 其中e是变量
 
    积分后: \( -k_{b}T\cdot f(e) \)
