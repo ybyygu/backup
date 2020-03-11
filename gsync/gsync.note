@@ -1,0 +1,284 @@
+#+TITLE: 个人用文件同步工具
+#+SETUPFILE: ~/Notes/common.org
+#+SETUPFILE: ~/Notes/coding.org
+#+OPTIONS: toc:nil
+
+* Memo [0/1]
+** TODO [2020-03-11 Wed] 添加python版upsync脚本为gsync命令行工具
+- [ ] 支持.env文件设置默认参数, 简化命令用法.
+- [X] 实现类似git那样的pull和push的功能.
+
+* Cargo
+:PROPERTIES:
+:header-args: :tangle Cargo.toml
+:END:
+#+BEGIN_SRC conf
+  [package]
+  name = "gsync"
+  version = "0.1.1"
+  edition = "2018"
+  authors = ["Wenping Guo <ybyygu@gmail.com>"]
+  description = "Synchronize remote site with local directory"
+  license = "MIT OR Apache-2.0"
+  exclude = ["bin/*", "docs/*"]
+
+  [dependencies]
+  duct = "0.10"
+  dotenv = "0.15"
+  structopt = "0.3"
+  promptly = "0.3.0"
+  gut = { version = "0.1.3", package = "gchemol-gut" }
+
+  [dev-dependencies]
+#+END_SRC
+
+* docs
+使用方式:
+: gsync push tower2
+: gsync pull tower2
+
+tower2可以写到当前目录下.env文件中:
+: GSYNC_REMOTE=tower2
+这样调用时, 只需:
+: gsync pull
+
+* src
+** docs
+#+BEGIN_SRC sh :tangle no
+  if [[ "$direction" == "send" ]]; then
+      cmd="rsync -av -F --ignore-errors --delete --delete-excluded --exclude-from=$EXCLUDES $curdir/ $remote_host:$remote_path"
+      txt="WARNING(delete): Send data in [$curdir]  to host [$remote_host] ?\n$cmd"
+  elif [[ "$direction" == "fetch" ]]; then
+      cmd="rsync -av --ignore-errors --delete --delete-excluded --exclude-from=$EXCLUDES $remote_host:$remote_path/ $curdir"
+      txt="Fetch data from host [$remote_host] into [$curdir] ?\n$cmd"
+  elif [[ "$direction" == "update" ]]; then
+      cmd="rsync -av --copy-links --exclude-from=$EXCLUDES $curdir/ $remote_host:$remote_path"
+      txt="Update data on remote host [$remote_host] based on [$curdir] ?\n$cmd"
+  else
+      # todo: for future
+      exit 1
+  fi
+#+END_SRC
+
+** lib.rs
+:PROPERTIES:
+:header-args: :tangle src/lib.rs
+:END:
+#+begin_src rust
+  pub mod cli;
+#+end_src
+
+** cli.rs
+:PROPERTIES:
+:header-args: :tangle src/cli.rs
+:END:
+*** imports
+#+begin_src rust
+  use std::path::{Path, PathBuf};
+  use structopt::*;
+
+  use gut::cli::*;
+  use gut::prelude::*;
+#+end_src
+
+*** interaction
+#+begin_src rust
+  fn user_query_continue(text: &str, default_answer: bool) -> Result<bool> {
+      println!("{}", text);
+
+      let answer = promptly::prompt_default("Continue to do rsync?", default_answer)
+          .context("prompt readline failed")?;
+
+      Ok(answer)
+  }
+#+end_src
+
+*** utils
+#+begin_src rust
+  fn get_current_dir() -> Result<PathBuf> {
+      std::env::current_dir().context("invalid current directory")
+  }
+
+  /// Traling slash is important in rsync
+  fn fix_path_trailing_slash(p: &Path) -> String {
+      let s = p.display().to_string();
+      if s.ends_with("/") {
+          format!("{}", s)
+      } else {
+          format!("{}/", s)
+      }
+  }
+
+  #[test]
+  fn test_trailing_slash() {
+      let x = fix_path_trailing_slash("/home/a/b".as_ref());
+      assert_eq!(x, "/home/a/b/");
+      let x = fix_path_trailing_slash("/home/a/b/".as_ref());
+      assert_eq!(x, "/home/a/b/");
+  }
+#+end_src
+
+*** rsync cmdline
+#+begin_src rust
+  fn build_rsync_cmdline(opts: &SyncOptions, dry_run: bool) -> Result<String> {
+      let mut cmdline = String::new();
+      writeln!(cmdline, "-av")?;
+      // use per directory filer file: .rsync-filter
+      writeln!(cmdline, "-F")?;
+      // for directory containing space
+      writeln!(cmdline, "--protect-args")?;
+      writeln!(cmdline, "--omit-dir-times")?;
+      writeln!(cmdline, "--omit-link-times")?;
+
+      // Enter dry-run mode for testing?
+      if dry_run {
+          writeln!(cmdline, "--dry-run")?;
+      }
+
+      // Only update DEST with newer files? If not, delete remote files if should
+      if !opts.update {
+          writeln!(cmdline, "--delete")?;
+          writeln!(cmdline, "--delete-excluded")?;
+      }
+
+      // rsync exclude file
+      // FIXME: default excluding?
+      let home_dir = std::env::var("HOME").expect("env $HOME");
+      let exclude = format!("{}/Backup/rsync.exclude", home_dir);
+      if Path::new(&exclude).exists() {
+          writeln!(cmdline, "--exclude-from={:}", exclude)?;
+      } else {
+          warn!("default exclude file not found: {:?}!", exclude);
+      };
+
+      // make sure path ends with slash
+      let local_dir = fix_path_trailing_slash(&get_current_dir()?);
+      match &opts.direction {
+          Direction::Push { remote } => {
+              writeln!(cmdline, "{}", local_dir)?;
+              let remote = format!("{}:{}", remote.display(), local_dir);
+              writeln!(cmdline, "{}", fix_path_trailing_slash(&remote.as_ref()))?;
+          }
+          Direction::Pull { remote } => {
+              let remote = format!("{}:{}", remote.display(), local_dir);
+              writeln!(cmdline, "{}", fix_path_trailing_slash(&remote.as_ref()))?;
+              writeln!(cmdline, "{}", local_dir)?;
+          }
+      }
+
+      Ok(cmdline)
+  }
+
+  #[test]
+  fn test_rsync_args() {
+      let remote = PathBuf::from("tower2");
+      let opts = SyncOptions {
+          direction: Direction::Push { remote },
+          update: false,
+          no_dryrun: false,
+      };
+
+      let cmdline = build_rsync_cmdline(&opts, false).expect("test-rsync-args");
+      let args: Vec<_> = cmdline.split_whitespace().collect();
+      dbg!(args);
+  }
+#+end_src
+
+*** sync
+#+begin_src rust
+  /// Synchronizing files with remote host in context of current directory (dwim)
+  fn sync_dwim(opts: &SyncOptions) -> Result<()> {
+      let cmdline = build_rsync_cmdline(opts, false)?;
+      // Ask for sure
+      let text = format!(
+          "issue rsync cmdline:\nrsync {:}",
+          cmdline.split_whitespace().join(" ")
+      );
+      if !user_query_continue(&text, true)? {
+          bail!("User canceled.");
+      }
+
+      // sanity check by calling rsync in dry-run mode
+      if !opts.no_dryrun {
+          let dryrun = build_rsync_cmdline(opts, true)?;
+          do_rsync(&dryrun)?;
+      }
+      if user_query_continue("Do you want to do rsync?", true)? {
+          do_rsync(&cmdline)?;
+          println!("Done!");
+      } else {
+          println!("cancelled by user.");
+      }
+
+      Ok(())
+  }
+
+  /// Call rsync
+  fn do_rsync(args: &str) -> Result<()> {
+      duct::cmd("rsync", args.split_whitespace())
+          .run()
+          .context("rsync cmd failed")?;
+
+      Ok(())
+  }
+#+end_src
+
+*** cli
+#+begin_src rust
+  #[derive(StructOpt, Debug)]
+  enum Direction {
+      /// Pull remote files to local
+      Pull {
+          /// Remote target host
+          #[structopt(env = "GSYNC_REMOTE")]
+          remote: PathBuf,
+      },
+
+      /// Push local files to remote
+      Push {
+          /// Remote target host
+          #[structopt(env = "GSYNC_REMOTE")]
+          remote: PathBuf,
+      },
+  }
+
+  #[derive(StructOpt, Debug)]
+  /// Files synchronization dwim
+  struct SyncOptions {
+      #[structopt(subcommand)]
+      direction: Direction,
+
+      /// Update dest with new files without deleting
+      #[structopt(short, long)]
+      update: bool,
+
+      /// Disable dryrun test step
+      #[structopt(short, long)]
+      no_dryrun: bool,
+  }
+
+  pub fn enter_main() -> Result<()> {
+      use Direction::*;
+
+      let args = SyncOptions::from_args();
+      sync_dwim(&args).context("Synchronizing files failed")?;
+
+      Ok(())
+  }
+#+end_src
+
+** main.rs
+:PROPERTIES:
+:header-args: :tangle src/main.rs
+:END:
+#+begin_src rust
+  use gut::prelude::*;
+
+  fn main() -> Result<()> {
+      if dotenv::dotenv().is_ok() {
+          println!("dotenv enabled");
+      }
+
+      gsync::cli::enter_main()
+  }
+#+end_src

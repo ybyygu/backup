@@ -1,17 +1,46 @@
-#+TITLE: My backup tools
+#+TITLE: 文件备份与同步工具
 #+SETUPFILE: ~/Notes/common.org
 #+SETUPFILE: ~/Notes/latex.org
 #+SETUPFILE: ~/Notes/coding.org
 
-* Memo
+* Memo [1/1]
+** DONE [2020-03-11 Wed] 完成rust版upsync
+更名为gsync
+
+- State "DONE"       from "TODO"       [2020-03-13 Fri 09:08]
 ** [2017-11-08 Wed] 添加python版upsync脚本
-同步当前目录至远程主机上镜像目录里.
+同步当前目录同步至远程主机上镜像目录里.
+
+
+* cargo
+virtual workspace
+#+BEGIN_SRC conf :tangle Cargo.toml :noweb yes
+  [workspace]
+  members = ["gsync"]
+
+  <<cargo-toml-local>>
+#+END_SRC
+
+方便本地编译调试
+#+name: cargo-toml-local
+#+BEGIN_SRC conf :tangle no
+  [patch.crates-io]
+  gsync = { path = "gsync" }
+  gchemol-gut = { path = "/home/ybyygu/Workspace/Programming/gchemol-rs/gut" }
+#+END_SRC
+
+设置编译期临时目录
+#+BEGIN_SRC conf :tangle .cargo/config
+  [build]
+  target-dir = "/scratch/cargo/backup-tools"
+#+END_SRC
+
+
 * install
 ** makefile
 使用gnu stow来将pkg目录下的文件安装symlink到$HOME/.local
 
 #+header: :tangle makefile
-#+name: e15fb2e8-3a89-4ebe-b788-3135e14bc564
 #+BEGIN_SRC makefile -i
 install: stow
 	stow --verbose --adopt --no-folding --target ~/.local pkg
@@ -23,7 +52,6 @@ stow:
 
 * rsync.exclude
 #+header: :tangle ~/Backup/rsync.exclude :mkdirp yes
-#+name: 096da3bf-b632-4b45-a0b3-a72c6cd81605
 #+BEGIN_SRC text
   ,*~
   ,*.swp
@@ -55,10 +83,10 @@ stow:
 
 * poor-man's bidirectional synchronization
 乞丐版双向同步工具
-** notes
+** docs
 - [[http://sujitpal.blogspot.jp/2009/12/unison-replacement-with-rsync.html][Salmon Run: A Unison replacement with rsync]]
+
 ** bash
-#+name: 99c579c3-8ce4-48b2-9003-0871f708fc83
 #+BEGIN_SRC shell :tangle no
   #!/usr/bin/env bash
 
@@ -79,14 +107,13 @@ stow:
 
   rsync -rvu --size-only --exclude="*.sh" --exclude=".onyx" --exclude="Makefile" --copy-links "$dir_boox"/ ./
   rsync -rvu --size-only --exclude="*.sh" --exclude=".onyx" --exclude="Makefile" --copy-links --delete ./ "$dir_boox"/
-
 #+END_SRC
+
 ** src: pmbisync
 :PROPERTIES:
 :header-args: :tangle pkg/bin/pmbisync :comments link :padline yes :mkdirp yes :shebang #! /usr/bin/env python3
 :END:
 *** header
-#+name: fc0e7920-d0cd-4d3c-8a66-4c12646be4b8
 #+begin_src python
   # -*- coding: utf-8 -*-
   #====================================================================#
@@ -104,7 +131,6 @@ stow:
 #+end_src
 
 *** globals
-#+name: 59a85edb-8d85-475d-a6ff-95a269cd9014
 #+begin_src python
   __VERSION__ = '0.1'
 
@@ -120,7 +146,6 @@ stow:
 #+end_src
 
 *** core
-#+name: 995203d6-af98-4371-9973-06b263dd6392
 #+begin_src python
   def get_files(rootdir):
       files_list = []
@@ -192,10 +217,9 @@ stow:
       else:
           print("No snapshot found. Save now.")
       save_snapshot(srcdir, picklefile)
-
 #+end_src
+
 *** cmdline
-#+name: fe05f3b3-13f9-4ca0-9070-84abf97bc27c
 #+begin_src python
   def main(argv=None):
       import optparse
@@ -227,14 +251,13 @@ stow:
 
   if __name__ == '__main__':
       main()
-
 #+end_src
-* upsync
+
+* upsync/python
 :PROPERTIES:
 :header-args: :tangle pkg/bin/upsync :comments link :padline yes :mkdirp yes :shebang #! /usr/bin/env python
 :END:
 ** header
-#+name: 20cf001a-a056-4824-bbcb-99ff99979a89
 #+begin_src python
   #===============================================================================#
   #   DESCRIPTION: synchronize remote site with local
@@ -249,8 +272,8 @@ stow:
   #       UPDATED:  <>
   #===============================================================================#
 #+end_src
+
 ** globals
-#+name: cb1680bc-1c16-433f-b54e-d22ee537ad43
 #+begin_src python
   import os
   import subprocess
@@ -262,7 +285,6 @@ stow:
 ** interaction
 如果在X环境中, 使用zenity与用户交互, 否则使用命令行界面.
 
-#+name: 8585c9ad-cbdc-4910-8600-1bcf41945efe
 #+begin_src python
   def user_query_continue(text):
       in_x = os.environ.get('DISPLAY')
@@ -291,16 +313,17 @@ stow:
 #+end_src
 
 ** synchronization
-#+name: 8ded775a-2e10-4716-b77f-852adf5d3bb5
 #+begin_src python
   def _call_rsync(cmdline):
       try:
-          output = subprocess.check_output(cmdline, universal_newlines=True, stderr=subprocess.STDOUT)
+          output = subprocess.check_output(
+              cmdline, universal_newlines=True, stderr=subprocess.STDOUT
+          )
       except subprocess.CalledProcessError as e:
-          msg = ' rsync failed with following errors '.center(70, '=')
+          msg = " rsync failed with following errors ".center(70, "=")
           print(msg)
-          print('{}'.format(e.stdout))
-          print('cmdline:')
+          print("{}".format(e.stdout))
+          print("cmdline:")
           print(cmdline)
           return None
 
@@ -319,26 +342,26 @@ stow:
           print("rsync exclude file {}: not found.".format(GLOBAL_EXCLUDE_FILE))
           return
 
-      cmdline = 'rsync -av --ignore-errors --delete --delete-excluded'.split()
-      cmdline.append('-F')             # use per directory filer file: .rsync-filter
-      cmdline.append('--itemize-changes')
-      cmdline.append('--omit-dir-times')
-      cmdline.append('--omit-link-times')
-      cmdline.append('--protect-args') # for directory containing space
-      cmdline.append('--exclude-from={}'.format(GLOBAL_EXCLUDE_FILE))
+      cmdline = "rsync -av --ignore-errors --delete --delete-excluded".split()
+      cmdline.append("-F")  # use per directory filer file: .rsync-filter
+      cmdline.append("--itemize-changes")
+      cmdline.append("--omit-dir-times")
+      cmdline.append("--omit-link-times")
+      cmdline.append("--protect-args")  # for directory containing space
+      cmdline.append("--exclude-from={}".format(GLOBAL_EXCLUDE_FILE))
 
       current_path = os.getcwd()
 
       # make sure path ends with slash
-      src_dir = src_dir if src_dir.endswith('/') else src_dir + '/'
-      dest_dir = dest_dir if dest_dir.endswith('/') else dest_dir + '/'
+      src_dir = src_dir if src_dir.endswith("/") else src_dir + "/"
+      dest_dir = dest_dir if dest_dir.endswith("/") else dest_dir + "/"
 
-      cmdline.append('{}'.format(src_dir))
-      cmdline.append('{}'.format(dest_dir))
+      cmdline.append("{}".format(src_dir))
+      cmdline.append("{}".format(dest_dir))
 
       # sanity check by calling rsync in dry-run mode
       cmdline_dryrun = cmdline.copy()
-      cmdline_dryrun.append('--dry-run')
+      cmdline_dryrun.append("--dry-run")
 
       # ask user if we should continue
       output = _call_rsync(cmdline_dryrun)
@@ -346,7 +369,7 @@ stow:
           print("cmdline: {}".format(cmdline))
           output = _call_rsync(cmdline)
       else:
-          print('cancelled by user.')
+          print("cancelled by user.")
 
 
   def mirror_dwim(remote_host):
@@ -364,7 +387,6 @@ stow:
 #+end_src
 
 ** cmdline
-#+name: 6b1828ef-5800-44aa-bb9a-132f6f413c4c
 #+begin_src python
   def main():
       version = "%(prog)s " + "v0.1"
@@ -392,6 +414,9 @@ stow:
 
       main()
 #+end_src
+
+* [[file:gsync/gsync.note][edit]] gsync
+
 
 * Local variables
 # Local Variables:
